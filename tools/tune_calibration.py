@@ -22,6 +22,11 @@ StockfishTrapFinder venv):
 
     python tools/tune_calibration.py lichess_games.tsv --collect data.pkl --games 400
     python tools/tune_calibration.py --data data.pkl
+    python tools/tune_calibration.py full_games.tsv --collect data.pkl --games 3000 --per-phase 1
+    python tools/tune_calibration.py --data data.pkl --phase middlegame
+
+The phases are by ply: opening before ply 16, middlegame from 16 to 59, late
+from 60 on.
 """
 
 import argparse
@@ -40,6 +45,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import measure_model as mm  # noqa: E402
 
 LEVELS = [100, 200, 300, 500]
+# Game phases by ply: name, first ply, ply after the last
+PHASES = [("opening", 0, 16), ("middlegame", 16, 60), ("late", 60, 10**6)]
+
+
+def phase_of(ply):
+    return next(name for name, first, end in PHASES if first <= ply < end)
 
 
 # ---------------------------------------------------------------- collecting
@@ -93,11 +104,25 @@ def truth_scores(tasks, depth, workers, seed):
 def collect(args):
     reservoirs, seen = mm.sample_games(args.games_file, args.games, args.seed)
     bands = [b for b in mm.BANDS if mm.band_name(b) in args.bands.split(",")]
-    tasks = [t for t in mm.positions_of([g for b in bands for g in reservoirs[b]]) if t["ply"] >= args.min_ply]
-    tasks = [t for t in tasks if mm.band_of(t["rating"]) in bands]
+    rng = random.Random(args.seed)
+    tasks = []
+    for game in (g for b in bands for g in reservoirs[b]):
+        positions = [t for t in mm.positions_of([game]) if t["ply"] >= args.min_ply and mm.band_of(t["rating"]) in bands]
+        if args.per_phase:
+            # A few positions per phase, so the positions of one game do not
+            # dominate and every phase is represented
+            sampled = []
+            for name, _, _ in PHASES:
+                in_phase = [t for t in positions if phase_of(t["ply"]) == name]
+                sampled += rng.sample(in_phase, min(args.per_phase, len(in_phase)))
+            positions = sampled
+        tasks += positions
+    for i, task in enumerate(tasks):
+        task["id"] = i
     if args.limit:
         tasks = tasks[: args.limit]
-    print(f"{len(tasks)} positions from bands {args.bands}", flush=True)
+    counts = {name: sum(phase_of(t["ply"]) == name for t in tasks) for name, _, _ in PHASES}
+    print(f"{len(tasks)} positions from bands {args.bands}: " + ", ".join(f"{n} {c}" for n, c in counts.items()), flush=True)
 
     data = {"tasks": tasks, "scores": {}}
     start = time.time()
@@ -128,13 +153,15 @@ def with_temperature(probs, temperature):
     return {m: p / total for m, p in powered.items()}
 
 
-def evaluate(data, depth, temperature, min_prob, scale_cp, max_rate):
+def evaluate(data, depth, temperature, min_prob, scale_cp, max_rate, phase="all"):
     """Returns (log-likelihood, top 1, {L: (predicted, actual)}) over the
-    positions where every input is present."""
+    positions of `phase` where every input is present."""
     truth_all = data["scores"]["truth"]
     calib_all = data["scores"].get(depth)
     ll, top1, pred, real = [], [], {l: [] for l in LEVELS}, {l: [] for l in LEVELS}
     for task in data["tasks"]:
+        if phase != "all" and phase_of(task["ply"]) != phase:
+            continue
         i, played = task["id"], task["played"]
         probs, truth = data["probs"].get(i), truth_all.get(i)
         if not probs or not truth or played not in truth:
@@ -164,14 +191,15 @@ def sweep(args):
     with open(args.data, "rb") as f:
         data = pickle.load(f)
     depths = [d for d in args.depths if d in data["scores"]]
-    print(f"{len(data['tasks'])} positions, truth depth {data['truth_depth']}, calibration depths {depths}")
+    tasks = [t for t in data["tasks"] if args.phase == "all" or phase_of(t["ply"]) == args.phase]
+    print(f"{len(tasks)} positions ({args.phase}), truth depth {data['truth_depth']}, calibration depths {depths}")
 
     rows = []
     for temperature in args.temperatures:
-        rows.append((None, temperature, 0, 0, 0) + evaluate(data, None, temperature, 0, 0, 0))
+        rows.append((None, temperature, 0, 0, 0) + evaluate(data, None, temperature, 0, 0, 0, args.phase))
     grid = itertools.product(depths, args.temperatures, args.min_probs, args.scales, args.rates)
     for depth, temperature, min_prob, scale, rate in grid:
-        rows.append((depth, temperature, min_prob, scale, rate) + evaluate(data, depth, temperature, min_prob, scale, rate))
+        rows.append((depth, temperature, min_prob, scale, rate) + evaluate(data, depth, temperature, min_prob, scale, rate, args.phase))
 
     actual = rows[0][7]
     print("\nActually played: " + "  ".join(f"L={l}: {100 * actual[l][1]:.1f}%" for l in LEVELS))
@@ -201,6 +229,10 @@ def main():
     parser.add_argument("--games", type=int, default=400, help="games sampled per band (default 400)")
     parser.add_argument("--limit", type=int, default=0, help="use only the first N positions (for timing)")
     parser.add_argument("--min-ply", type=int, default=6)
+    parser.add_argument("--per-phase", type=int, default=0,
+                        help="positions sampled per game in each phase (opening, middlegame, late); default 0: all")
+    parser.add_argument("--phase", default="all", choices=["all"] + [name for name, _, _ in PHASES],
+                        help="phase scored by the sweep (default all)")
     parser.add_argument("--depths", type=lambda t: [int(x) for x in t.split(",")], default=[1, 2, 3],
                         help="calibration depths (default 1,2,3)")
     parser.add_argument("--truth-depth", type=int, default=10, help="Stockfish depth blunders are judged by (default 10)")

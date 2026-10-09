@@ -188,7 +188,45 @@ Collecting took about 4 minutes for 2,060 positions of players rated 1200–1399
 - **The calibration depth hardly matters.** Depth 1 does as well as depth 4.
 - **No setting predicts the played move noticeably better than raw Maia-3.** The differences in log-likelihood (±0.01) and top 1 (±0.5%) are within the noise of this sample.
 
-So the calibration step does not need to be built into Lc0. `OpponentModelTemperature 0.9` gives the same correction at no cost. As with the other measurements, these are opening positions only (plies 6–15), since the games file stops at ply 16.
+These are opening positions only (plies 6–15), since the games file stops at ply 16. The full games below change the conclusion.
+
+#### Full games
+[tools/fetch_lichess_games.py](tools/fetch_lichess_games.py) streams a monthly file from the Lichess database. It decompresses the file as it downloads and stops once it has enough games, so it downloads only a small part of the 30 GB file. It writes full games in the format of `lichess_games.tsv`.
+
+The run used 3,000 rated blitz and rapid games from August 2026 with both players rated 1200–1399. That was 18 MB of the file, fetched in 4 seconds. From each game, `--per-phase 1` sampled one position from each phase that the game reached:
+- opening: before ply 16;
+- middlegame: plies 16–59;
+- late: ply 60 on.
+
+That gave 7,451 positions, and collecting their data took 10 minutes.
+
+```
+python tools/fetch_lichess_games.py full_games.tsv --month 2026-08 --games 3000
+python tools/tune_calibration.py full_games.tsv --collect full.pkl --games 3000 --per-phase 1 --depths 1,2,3,4
+python tools/tune_calibration.py --data full.pkl --phase middlegame
+```
+
+Probability on moves losing at least L centipawns (depth 10), against how often they were played:
+
+| Phase | Model | Log-likelihood | L = 100 | L = 200 | L = 300 | L = 500 |
+|---|---|---|---|---|---|---|
+| Opening | Actually played | | 14.5% | 6.2% | 3.9% | 2.1% |
+| | Maia3-23M | −1.533 | 15.3% | 6.5% | 3.9% | 2.2% |
+| | Maia3-23M, temperature 0.9 | −1.540 | 14.1% | 5.9% | 3.4% | 1.9% |
+| Middlegame | Actually played | | 29.3% | 15.7% | 10.7% | 5.6% |
+| | Maia3-23M | −1.448 | 30.1% | 16.3% | 11.0% | 5.8% |
+| | Maia3-23M, temperature 0.9 | −1.457 | 28.5% | 15.1% | 10.0% | 5.2% |
+| Late | Actually played | | 25.8% | 16.8% | 13.4% | 9.9% |
+| | Maia3-23M | −1.279 | 26.2% | 16.8% | 13.4% | 9.8% |
+| | Maia3-23M, temperature 0.9 | −1.293 | 25.0% | 15.8% | 12.6% | 9.2% |
+
+- **Blunders are about twice as common after the opening.** Moves losing 100 cp or more: 14.5% in the opening, 29.3% in the middlegame.
+- **Raw Maia-3 matches the real blunder rates in every phase.** It is within 1 percentage point at every level, and closest late in the game.
+- **A temperature of 0.9 makes the fit worse after the opening.** It underestimates blunders there, and it lowers the log-likelihood in every phase.
+- **The calibration step adds nothing.** The best calibrated settings (rate 0.2–0.3, scale 3200) match the rates only marginally more closely. They lower the log-likelihood slightly, at any depth.
+- **The earlier opening sample was different.** There, raw Maia-3 overestimated blunders by about 20%. That file's filtering differed: each game was assigned to a band by the players' average rating, and its time controls are unknown. Its opening blunder rate was also lower (12.9% at L = 100 against 14.5%).
+
+So Lc0 should use Maia-3 as it is, with the default `OpponentModelTemperature` of 1.0 and no calibration.
 
 ## Opponent Modeling in Lc0
 The Stockfish version models the opponent as playing the best move, for it, from a restricted set. A second version, built on [Lc0](https://lczero.org), models the opponent as playing like a [Maia](https://github.com/CSSLab/maia-chess) network instead: at the opponent's moves, the search shares out its visits in proportion to Maia's move probabilities, so each position's value becomes the expected result against that opponent. The design and results are in [LC0_PLAN.md](LC0_PLAN.md).
