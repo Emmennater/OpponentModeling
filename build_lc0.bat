@@ -10,6 +10,11 @@ rem 2022 or its Build Tools with the C++ workload, and meson and ninja
 rem ("python -m pip install --user meson ninja").
 rem
 rem The result is lc0-src\build\lc0.exe.
+rem
+rem For Maia-3 opponent models it also builds with ONNX Runtime, when its GPU
+rem package is unpacked at lc0\onnxruntime-win-x64-gpu_cuda13-1.31.0, and copies
+rem its DLLs next to lc0.exe, along with cuDNN 9's DLLs from CUDNN_BIN (by
+rem default the nvidia-cudnn-cu13 wheel in .venv), which ONNX Runtime needs.
 
 setlocal
 
@@ -50,18 +55,30 @@ set CXX=cl
 set CC_LD=link
 set CXX_LD=link
 
+set "ORT_DIR=%~dp0lc0\onnxruntime-win-x64-gpu_cuda13-1.31.0"
+if not defined CUDNN_BIN set "CUDNN_BIN=%~dp0.venv\Lib\site-packages\nvidia\cudnn\bin"
+set ONNX_OPTIONS=-Donnx=false
+if exist "%ORT_DIR%\include\onnxruntime_cxx_api.h" (
+    set ONNX_OPTIONS=-Donnx=true -Donnx_libdir="%ORT_DIR%\lib" -Donnx_include="%ORT_DIR%\include"
+) else (
+    echo ONNX Runtime not found at %ORT_DIR%: building without Maia-3 support.
+)
+
 pushd "%~dp0lc0-src" || exit /b 1
 
 if not exist build\build.ninja (
     meson setup build --backend ninja --buildtype release -Ddefault_library=static ^
         -Dplain_cuda=true -Dcudnn=false -Ddx=false -Dopencl=false -Dblas=false -Dgtest=false ^
         -Dcc_cuda=%CC_CUDA% ^
-        -Dcudnn_include="%CUDA_PATH%\include" -Dcudnn_libdirs="%CUDA_PATH%\lib\x64"
-    if errorlevel 1 (
-        popd
-        echo meson setup failed.
-        exit /b 1
-    )
+        -Dcudnn_include="%CUDA_PATH%\include" -Dcudnn_libdirs="%CUDA_PATH%\lib\x64" ^
+        %ONNX_OPTIONS%
+) else (
+    meson configure build %ONNX_OPTIONS%
+)
+if errorlevel 1 (
+    popd
+    echo meson setup failed.
+    exit /b 1
 )
 
 meson compile -C build
@@ -73,6 +90,16 @@ if not "%RESULT%"=="0" (
     echo.
     echo Build failed.
     exit /b %RESULT%
+)
+
+if exist "%ORT_DIR%\lib\onnxruntime.dll" (
+    copy /y "%ORT_DIR%\lib\onnxruntime*.dll" "%~dp0lc0-src\build\" >nul
+    if exist "%CUDNN_BIN%\cudnn64_9.dll" (
+        copy /y "%CUDNN_BIN%\cudnn*.dll" "%~dp0lc0-src\build\" >nul
+    ) else (
+        echo cuDNN 9 not found at %CUDNN_BIN%: Maia-3 opponent models will not load.
+        echo Set CUDNN_BIN to the folder that holds cudnn64_9.dll.
+    )
 )
 
 echo.

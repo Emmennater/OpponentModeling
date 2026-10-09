@@ -56,6 +56,7 @@ Lc0 marks positions as proven wins, losses or draws and propagates them up the t
 ### Options
 - `OpponentModelWeights`: the Maia network file. Empty turns opponent modeling off, so Lc0 behaves exactly as normal.
 - `OpponentModelTemperature`: a temperature for Maia's probabilities, 1.0 by default. Above 1 flattens them, so the opponent is less predictable; below 1 sharpens them.
+- `OpponentModelRating` and `OpponentModelOwnRating` (added with Maia-3, see below): the modeled opponent's rating, and the rating of the side the engine plays, both 1300 by default. Maia-3 takes both as inputs. Maia-1 networks ignore them, since each is trained for one rating.
 
 ### What stays the same
 - Our nodes, including the root: PUCT with the main network, as usual.
@@ -82,14 +83,35 @@ Implemented as planned, in [search.h](lc0-src/src/search/classic/search.h), [sea
 - **Proven results** are not propagated while the opponent model is on.
 - Without `OpponentModelWeights`, every new branch is skipped, so the search runs Lc0's original code.
 
-### Results
-- **Visit shares follow the model.** In the Belgrade Gambit line, after `8.Nxe4`, Black's replies got 94.2%, 4.6% and 0.3% of the visits, against Maia-1300 probabilities of 94.17%, 4.59% and 0.29%.
+### Maia-3
+[Maia-3](https://github.com/CSSLab/maia3) predicts real moves better than Maia-1 (see the README) and covers ratings 600 to 3000 in one network, but it is a PyTorch transformer with its own inputs and move encoding, so Lc0's backends cannot run it. It gets its own backend, [network_maia3.cc](lc0-src/src/neural/backends/network_maia3.cc), used when `OpponentModelWeights` names a `.onnx` file:
+
+- **Export.** [tools/export_maia3.py](tools/export_maia3.py) exports a checkpoint to ONNX, in fp32 or fp16, and checks it against the original PyTorch model. Its forward pass is Maia-3's own, except that the 256 promotion logits are computed in one operation instead of a Python loop of 256 small ones. The result matches the original to within 3e-5 in the logits.
+- **Encoding in C++.** Lc0's board is already in the frame Maia-3 expects (the side to move's, ranks flipped for Black), so each position's 12 piece planes are read straight from its bitboards, for the last 8 positions, oldest first, padded at the front with the oldest. Moves map to Maia-3's vocabulary as `from × 64 + to`, castling as the king's two-square move, and promotions at `4096 + (from file × 8 + to file) × 4 + piece`. This replaces the Python encoding, which managed about 2,000 positions a second.
+- **Running.** ONNX Runtime's CUDA provider runs the network. Maia-3 is many small GPU operations, so a run cost about 12 ms whatever the batch size, which held the search to about 10,000 nodes per second. Now each of the batch sizes 16, 32, 64, 128 and 256 gets its own session with fixed shapes and GPU buffers, and ONNX Runtime records each run once as a CUDA graph and replays it. A batch runs at the smallest size that holds it. The graphs are recorded when the model loads, because recording blocks CUDA calls from other threads, such as the main network's.
+- **Probabilities and value.** The policy is a softmax over the legal moves' logits, at `OpponentModelTemperature`. The value (loss, draw, win) is filled in but not used.
+
+ In the Belgrade Gambit line, after `8.Nxe4`, Black's replies got 94.2%, 4.6% and 0.3% of the visits, against Maia-1300 probabilities of 94.17%, 4.59% and 0.29%.
 - **No model, no change.** Unmodified Lc0 is not exactly reproducible between runs, even with one thread and no task workers: two runs of it differed on `1.e4 c5`. Compared at 20,000 nodes, the final root statistics of the modified and unmodified builds were identical in two positions out of four, and in the other two the differences were within the unmodified build's own run-to-run variation.
 - **Speed.** About 62,000 nodes per second with Maia, against about 140,000 for plain Lc0 with the release's network on the RTX 4080: about 2.2 times slower, because opponent nodes need two evaluations.
+- **Maia-3 matches the reference.** Lc0's probabilities at opponent nodes match StockfishTrapFinder's `Maia3Net` (PyTorch): after `8.Nxe4` in the Belgrade Gambit line, with ratings 1100 against 1900, 92.55%, 3.79% and 1.07% from Lc0 against 92.54%, 3.79% and 1.07%, with the fp32 23M network. The fp16 networks differ by about 0.1 percentage points. The visit shares follow the probabilities, as with Maia-1, and the White-to-move frame checks out too.
+- **Maia-3 speed**, nodes per second after `1.e4 c5`, with the model loaded, on the RTX 4080:
+
+  | Opponent model | Nodes per second |
+  |---|---|
+  | None | 156,000 |
+  | Maia-1 (1300) | 69,000 |
+  | Maia3-5M, fp16 | 38,000 |
+  | Maia3-23M, fp16 | 24,000 |
+  | Maia3-23M, fp32 | about 18,000 |
+  | Maia3-79M, fp16 | 10,000 |
+
+  Before CUDA graphs and the vectorized promotions, Maia3-23M fp16 ran at about 10,000. The networks are now limited by their computation: at batch 256, the 23M network takes about 80 microseconds per position.
 - **Different choices.** With Maia-1300, the engine plays `2.d4` after `1.e4 c5` (plain Lc0: `2.Nf3`), and `Qc3` instead of `Bxd6` in the `Bf4` line from the Stockfish testing.
 - **Scores are expected values,** so they are far from plain Lc0's: for example +1.92 from the start position against Maia-1300, against +0.28. A strong engine playing a 1300 player is expected to win from most positions. What matters for choosing a move is how the candidates compare.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
 - **Calibration.** A previous project reweighted Maia's probabilities with a low-depth Stockfish evaluation, moving part of a move's probability to the evaluation's best move by `max_rate × (1 − exp(−loss / scale_cp))`, to suppress blunders a quick look would catch. Whether that predicts real moves better can be measured offline with the measurement tool before building it in. Building it in would need a low-depth evaluation of every candidate at each new opponent node, either a Stockfish evaluator compiled into Lc0 (CPU) or the main network's evaluation of the candidate positions (GPU).
-- **Ratings outside Maia's range.** Maia covers 1100 to 1900. Maia-3 covers 600 to 3000 in one network and predicts moves better, but it is a PyTorch network, not an Lc0 one. The current target, 1200 to 1400, is covered by Maia-1.
+- **Ratings outside Maia's range.** Maia covers 1100 to 1900. Maia-3, now supported, covers 600 to 3000.
+- **Which Maia-3 size.** The 23M network predicts practically as well as the 79M one at 2.4 times the speed. The 5M one is another 1.6 times faster and predicts a little worse (51.4% top 1 against 52.3%).

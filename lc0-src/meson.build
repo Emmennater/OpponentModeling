@@ -614,6 +614,12 @@ if get_option('build_backends')
                                       is_system: true)
     endif
     files += 'src/neural/backends/network_onnx.cc'
+    # Opponent modeling: Maia-3 networks run through ONNX Runtime's CUDA
+    # provider, with inputs and outputs in CUDA memory
+    if (get_option('cudnn') or get_option('plain_cuda')) and cu_dart.found()
+      files += 'src/neural/backends/network_maia3.cc'
+      add_project_arguments('-DUSE_MAIA3', language : 'cpp')
+    endif
     if cc.find_library('onnxruntime_providers_rocm',
                        dirs: get_option('onnx_libdir'), required: false).found()
       add_project_arguments('-DUSE_ROCM', language : 'cpp')

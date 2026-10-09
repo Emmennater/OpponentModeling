@@ -163,9 +163,12 @@ The Stockfish version models the opponent as playing the best move, for it, from
 
 Its source is Lc0 v0.32.1, in [lc0-src/](lc0-src/). To build it on Windows, install the CUDA toolkit, Visual Studio 2022 or its Build Tools with the C++ workload, and `meson` and `ninja` (`python -m pip install --user meson ninja`), then run [build_lc0.bat](build_lc0.bat). The result is `lc0-src\build\lc0.exe`.
 
-It needs two networks: a main network for its own play, and a Maia network for the opponent. Two UCI options control the opponent model:
-- **OpponentModelWeights:** the Maia network file, for example `lc0/nets/maia-1300.pb.gz`. Empty turns opponent modeling off.
+It needs two networks: a main network for its own play, and a Maia network for the opponent. These UCI options control the opponent model:
+- **OpponentModelWeights:** the Maia network file, for example `lc0/nets/maia-1300.pb.gz`, or a Maia-3 network exported to ONNX, for example `lc0/nets/maia3-23m-fp16.onnx`. Empty turns opponent modeling off.
 - **OpponentModelTemperature** (default 1.0): above 1 makes the opponent less predictable, below 1 more.
+- **OpponentModelRating** and **OpponentModelOwnRating** (default 1300 each), for Maia-3 only: the opponent's rating, and the rating of the side the engine plays.
+
+Maia-3 networks run on ONNX Runtime. To build with it, unpack ONNX Runtime 1.31's GPU package for CUDA 13 (`onnxruntime-win-x64-gpu_cuda13-1.31.0.zip`) into `lc0/`, and install cuDNN 9, for example with `pip install nvidia-cudnn-cu13` into `.venv` (or set `CUDNN_BIN` to the folder that holds `cudnn64_9.dll`). [build_lc0.bat](build_lc0.bat) then builds with ONNX Runtime and copies its DLLs and cuDNN's next to `lc0.exe`. [tools/export_maia3.py](tools/export_maia3.py) exports a Maia-3 checkpoint, for example `python tools/export_maia3.py maia3-23m lc0/nets/maia3-23m-fp16.onnx --fp16`. The fp16 23M network is the best balance of accuracy and speed: about 24,000 nodes per second, against 69,000 with Maia-1 (see [LC0_PLAN.md](LC0_PLAN.md)).
 
 The scores it reports are expected results against the modeled opponent, so they are much higher than plain Lc0's: a strong engine is expected to beat a 1300 player from most positions.
 

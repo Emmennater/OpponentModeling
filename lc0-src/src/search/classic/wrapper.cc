@@ -29,6 +29,9 @@
 #include "search/classic/search.h"
 #include "search/classic/stoppers/factory.h"
 #include "neural/memcache.h"
+#ifdef USE_MAIA3
+#include "neural/backends/network_maia3.h"
+#endif
 #include "neural/register.h"
 #include "search/register.h"
 #include "search/search.h"
@@ -58,7 +61,8 @@ const OptionId kOpponentModelWeightsId{
      .help_text =
          "Network that predicts the opponent's moves, such as a Maia network. "
          "When set, the opponent's moves are sampled from it in proportion to "
-         "its move probabilities, instead of searched for the best. Empty "
+         "its move probabilities, instead of searched for the best. A .onnx "
+         "file is read as a Maia-3 network (see tools/export_maia3.py). Empty "
          "turns opponent modeling off.",
      .visibility = OptionId::kAlwaysVisible}};
 const OptionId kOpponentModelTemperatureId{
@@ -67,6 +71,18 @@ const OptionId kOpponentModelTemperatureId{
      .help_text =
          "Temperature for the opponent model's move probabilities. Above 1 "
          "makes the opponent less predictable, below 1 more.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId kOpponentModelRatingId{
+    {.long_flag = "opponent-model-rating",
+     .uci_option = "OpponentModelRating",
+     .help_text = "Rating of the modeled opponent, for Maia-3 opponent models.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId kOpponentModelOwnRatingId{
+    {.long_flag = "opponent-model-own-rating",
+     .uci_option = "OpponentModelOwnRating",
+     .help_text =
+         "Rating the Maia-3 opponent model is told the opponent is playing "
+         "against, that is the rating of the side this engine plays.",
      .visibility = OptionId::kAlwaysVisible}};
 
 class ClassicSearch : public SearchBase {
@@ -106,6 +122,8 @@ class ClassicSearch : public SearchBase {
   std::unique_ptr<Backend> opponent_backend_;
   std::string opponent_weights_;
   float opponent_temperature_ = 1.0f;
+  float opponent_rating_ = 0.0f;
+  float opponent_own_rating_ = 0.0f;
   bool opponent_black_to_move_ = false;
   std::optional<std::chrono::steady_clock::time_point> move_start_time_;
 };
@@ -144,10 +162,15 @@ void ClassicSearch::UpdateOpponentModel() {
   const std::string weights =
       options_->Get<std::string>(kOpponentModelWeightsId);
   const float temperature = options_->Get<float>(kOpponentModelTemperatureId);
+  const float rating = options_->Get<float>(kOpponentModelRatingId);
+  const float own_rating = options_->Get<float>(kOpponentModelOwnRatingId);
+  const bool is_maia3 = weights.ends_with(".onnx");
   const bool black_to_move = tree_->HeadPosition().IsBlackToMove();
-  const bool model_changed = weights != opponent_weights_ ||
-                             (!weights.empty() &&
-                              temperature != opponent_temperature_);
+  const bool model_changed =
+      weights != opponent_weights_ ||
+      (!weights.empty() && temperature != opponent_temperature_) ||
+      (is_maia3 &&
+       (rating != opponent_rating_ || own_rating != opponent_own_rating_));
 
   // The tree's values and opponent-node move probabilities depend on the
   // model and on which side is the opponent: the side not to move at the root.
@@ -160,8 +183,9 @@ void ClassicSearch::UpdateOpponentModel() {
   if (!model_changed) return;
   opponent_backend_.reset();
   opponent_options_.reset();
-  opponent_weights_ = weights;
-  opponent_temperature_ = temperature;
+  // Recorded only once the model has loaded, so a model that failed to load
+  // is tried again rather than taken as loaded
+  opponent_weights_.clear();
   if (weights.empty()) return;
 
   // The same backend settings as the main network, with the opponent model's
@@ -170,9 +194,28 @@ void ClassicSearch::UpdateOpponentModel() {
   opponent_options_->Set<std::string>(SharedBackendParams::kWeightsId, weights);
   opponent_options_->Set<float>(SharedBackendParams::kPolicySoftmaxTemp,
                                 temperature);
-  opponent_backend_ =
-      CreateMemCache(BackendManager::Get()->CreateFromParams(*opponent_options_),
-                     *opponent_options_);
+  if (is_maia3) {
+#ifdef USE_MAIA3
+    // Maia-3 is not an Lc0 network and has its own backend
+    opponent_backend_ = CreateMemCache(
+        MakeMaia3Backend({.model_path = weights,
+                          .temperature = temperature,
+                          .rating = rating,
+                          .opponent_rating = own_rating}),
+        *opponent_options_);
+#else
+    throw Exception("This Lc0 was built without ONNX Runtime, so it cannot "
+                    "run Maia-3 opponent models.");
+#endif
+  } else {
+    opponent_backend_ = CreateMemCache(
+        BackendManager::Get()->CreateFromParams(*opponent_options_),
+        *opponent_options_);
+  }
+  opponent_weights_ = weights;
+  opponent_temperature_ = temperature;
+  opponent_rating_ = rating;
+  opponent_own_rating_ = own_rating;
 }
 
 void ClassicSearch::StartSearch(const GoParams& params) {
@@ -219,6 +262,9 @@ class ClassicSearchFactory : public SearchFactory {
     parser->Add<ButtonOption>(kClearTree);
     parser->Add<StringOption>(kOpponentModelWeightsId) = "";
     parser->Add<FloatOption>(kOpponentModelTemperatureId, 0.1f, 10.0f) = 1.0f;
+    parser->Add<FloatOption>(kOpponentModelRatingId, 500.0f, 3000.0f) = 1300.0f;
+    parser->Add<FloatOption>(kOpponentModelOwnRatingId, 500.0f, 3000.0f) =
+        1300.0f;
   }
 };
 
