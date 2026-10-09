@@ -79,9 +79,16 @@ void OpponentModel::start_search(int depth, int thresholdCp) {
         cacheThresholdCp = thresholdCp;
     }
 
+    Worker& w = *worker;
+
+    // Reset the node count at every search, as ThreadPool::start_thinking()
+    // does for the main workers. search() uses it to vary draw scores
+    // (value_draw()), so a count carried over from earlier searches would make
+    // the results depend on them.
+    w.nodes = 0;
+
     // Age the move-ordering histories once per main search, as
     // iterative_deepening() does for the main workers at the start of every search
-    Worker& w = *worker;
 
     w.lowPlyHistory.fill(102);
 

@@ -1134,6 +1134,18 @@ moves_loop:  // When in check, search starts here
         && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value))
         return probCutBeta;
 
+    // Opponent modeling: where the opponent is to move, only search the moves a
+    // low-depth search finds plausible. This comes after every early exit above,
+    // so nodes that end early never pay for the low-depth search. The root is
+    // never an opponent node: the opponent is the side not to move at the root.
+    AllowedMoves allowedMoves;
+    const bool   restrictMoves = opponentModel && opponentDepth > 0 && us == opponentColor;
+
+    assert(!(rootNode && restrictMoves));
+
+    if (restrictMoves && !opponentModel->allowed_moves(*this, pos, allowedMoves))
+        return VALUE_ZERO;  // The search was stopped, so the value is never used
+
     const PieceToHistory* contHist[] = {
       (ss - 1)->continuationHistory, (ss - 2)->continuationHistory, (ss - 3)->continuationHistory,
       (ss - 4)->continuationHistory, (ss - 5)->continuationHistory, (ss - 6)->continuationHistory};
@@ -1157,6 +1169,12 @@ moves_loop:  // When in check, search starts here
 
         // Check for legality
         if (!pos.legal(move))
+            continue;
+
+        // Skip moves the opponent model rules out, before they are counted, so
+        // move-count pruning and reductions only see the allowed moves
+        if (restrictMoves
+            && std::find(allowedMoves.begin(), allowedMoves.end(), move) == allowedMoves.end())
             continue;
 
         // At root obey the "searchmoves" option and skip moves not listed in Root

@@ -143,6 +143,12 @@ class Engine {
     // Used only by the opponent model's low-depth searches
     TranspositionTable                   opponentTT;
     std::map<NumaIndex, SharedHistories> opponentSharedHists;
+
+    // The opponent model of the previous search. COLOR_NB means the main hash
+    // table holds no values from a previous search.
+    int   lastOpponentDepth     = 0;
+    int   lastOpponentThreshold = 0;
+    Color lastOpponentColor     = COLOR_NB;
 };
 
 }  // namespace Stockfish

@@ -84,6 +84,22 @@ opponentmoves
 
 Here only `f3h4`, winning Black's queen, is kept. Every other move is more than 200 centipawns worse.
 
+## First Results
+**Speed.** Time for `bench` (50 positions searched to depth 13, one thread) at different opponent depths:
+
+| Opponent Depth | Time | Compared with Stockfish |
+|---|---|---|
+| 0 (disabled) | 2.8 s | 1× |
+| 1 | 11.3 s | 4.0× |
+| 2 (default) | 6.5 s | 2.3× |
+| 3 | 14.0 s | 4.9× |
+| 4 | 35.1 s | 12× |
+| 6 | 63.9 s | 22× |
+
+These compare the time to reach the same depth, but with the model enabled the engine searches a different, restricted tree, so the comparison is only a rough guide. Depth 1 is slower than depth 2. At depth 1 the low-depth search is a single move followed by a search of captures only, so its judgments are noisier.
+
+**Traps.** The engine now plays moves that set traps for the modeled opponent, and reports scores for the game against that opponent, not objective ones. For example, after `1.e4 c5` it plays `2.Bb5` and reports about +7. Black's depth-2 search believes `2...Qa5` wins the bishop, so the model assumes Black will play it. Plain Stockfish rates `2.Bb5` as roughly equal, so the move is objectively fine. The engine simply expects the opponent to go wrong afterwards. The scores are only as good as the opponent model: a stronger opponent will not fall for these traps.
+
 ## Model Parameters
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:
 - Opponent Depth (default 2): Search depth for our opponent. 0 disables opponent modeling. The default is kept low for initial testing, because the engine is expected to run much slower than normal Stockfish.

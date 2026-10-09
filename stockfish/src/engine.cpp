@@ -165,6 +165,29 @@ void Engine::go(Search::LimitsType& limits) {
     assert(limits.perft == 0);
     verify_network();
 
+    // Values in the main hash table depend on the opponent model: on which side
+    // is the opponent, and on the depth and threshold. If any of these changed
+    // since the last search, the stored values belong to a different game tree.
+    // With the model disabled, the side and threshold make no difference.
+    const int   opponentDepth     = int(options["Opponent Depth"]);
+    const int   opponentThreshold = int(options["Centipawn Threshold"]);
+    const Color opponentColor     = ~pos.side_to_move();
+
+    const bool modelChanged =
+      opponentDepth != lastOpponentDepth
+      || (opponentDepth > 0
+          && (opponentThreshold != lastOpponentThreshold || opponentColor != lastOpponentColor));
+
+    if (modelChanged && lastOpponentColor != COLOR_NB)
+    {
+        wait_for_search_finished();
+        tt.clear(threads);
+    }
+
+    lastOpponentDepth     = opponentDepth;
+    lastOpponentThreshold = opponentThreshold;
+    lastOpponentColor     = opponentColor;
+
     threads.start_thinking(options, pos, states, limits);
 }
 void Engine::stop() { threads.stop = true; }
@@ -175,6 +198,9 @@ void Engine::search_clear() {
     tt.clear(threads);
     opponentTT.clear(threads);
     threads.clear();
+
+    // The hash table is empty, so the next search need not clear it again
+    lastOpponentColor = COLOR_NB;
 
     // TODO: does not work with multiple instances
     Tablebases::init(options["SyzygyPath"]);  // Free mapped files
