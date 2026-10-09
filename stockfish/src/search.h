@@ -130,6 +130,7 @@ struct Stack {
     bool                        followPV;
     int                         cutoffCnt;
     int                         reduction;
+    bool                        onlyAllowed;  // Opponent modeling: see the singular extension
 };
 
 

@@ -35,9 +35,10 @@ A move is allowed if it scores at least the opponent's best score minus the thre
 Because the search looks at every move, the answer to each test is exact, whatever order moves are tried in. The best move is always allowed, so the opponent always has at least one move when it has a legal one.
 
 ### Hooking into the Main Search
-Only two changes are made to `search()`:
+Three changes are made to `search()`:
 - At nodes where the opponent is to move, the opponent's best score is found just before the moves loop, after the `moves_loop` label so that nodes in check are covered too. Nodes that end earlier (hash table hits, razoring, futility pruning, null-move pruning) never pay for a low-depth search.
 - In the moves loop, each move is tested just after Stockfish's own pruning, so moves Stockfish would prune anyway are never tested. Disallowed moves are skipped and not counted, so late-move reductions and move-count pruning see only the allowed moves and the moves Stockfish pruned.
+- A move that is the opponent's only allowed move gets no singular extension, unless it is also the only legal move. Stockfish extends a move by up to 3 plies when all other moves are much worse, and a move the model forces always looks that way. Extending such moves made lines where the opponent is forced move after move grow deeper instead of shallower.
 
 Each position's best score and verdicts are kept in a filter cache, so a position that comes up again costs nothing. Since every verdict depends only on the position, the cache only saves time; it can't change a result. The cache is cleared on `ucinewgame` or when an opponent parameter changes.
 
@@ -78,9 +79,9 @@ The command also runs the faster procedure the main search uses, and prints an e
 | Opponent Depth | Time | Compared with Stockfish |
 |---|---|---|
 | 0 (disabled) | 2.5 s | 1× |
-| 1 | 11.1 s | 4.5× |
-| 2 (default) | 66.8 s | 27× |
-| 3 | 231 s | 93× |
+| 1 | 8.7 s | 3.5× |
+| 2 (default) | 71.9 s | 29× |
+| 3 | 232 s | 93× |
 
 These compare the time to reach the same depth. With the model enabled, the engine searches a different, restricted tree, so the comparison is only a rough guide. Almost all of the extra time is spent in the low-depth searches: the main search itself visits fewer nodes than plain Stockfish, because the opponent has fewer moves. A first version that used Stockfish's own search for the opponent was much faster (2.3× at depth 2), but its verdicts were unreliable (see "A Search That Depends Only on the Position").
 

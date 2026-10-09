@@ -1301,10 +1301,20 @@ moves_loop:  // When in check, search starts here
             Depth singularDepth = newDepth / 2;
 
             ss->excludedMove = move;
+            ss->onlyAllowed  = false;
             value = search<NonPV>(pos, ss, singularBeta - 1, singularBeta, singularDepth, cutNode);
             ss->excludedMove = Move::none();
 
-            if (value < singularBeta)
+            // Opponent modeling: if the opponent model allows no other move,
+            // although other moves are legal, the move is not singular in the
+            // usual sense, and it gets no extension. Otherwise every move the
+            // model forces would be extended by up to 3 plies, and lines where
+            // the model forces the opponent move after move would grow deeper
+            // instead of shallower.
+            if (ss->onlyAllowed)
+                ss->onlyAllowed = false;
+
+            else if (value < singularBeta)
             {
                 int corrValAdj   = std::abs(correctionValue) / 198368;
                 int doubleMargin = -2 + 204 * PvNode - 152 * !ttCapture - corrValAdj
@@ -1613,7 +1623,14 @@ moves_loop:  // When in check, search starts here
     // must be a mate or a stalemate (just a fail low score if we are in a
     // singular extension search).
     if (!moveCount)
+    {
         bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : VALUE_DRAW;
+
+        // Opponent modeling: in a singular extension search, the excluded move
+        // was the only move the opponent model allows, but not the only legal one
+        if (excludedMove && restrictMoves && opponentNode.legalCount > 1)
+            ss->onlyAllowed = true;
+    }
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
