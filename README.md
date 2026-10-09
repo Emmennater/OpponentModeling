@@ -91,10 +91,13 @@ These compare the time to reach the same depth. With the model enabled, the engi
 [tools/measure_model.py](tools/measure_model.py) replays games from a file of Lichess games and compares the model with the moves actually played. It needs Python with `python-chess`. Each line of the games file holds the white rating, black rating, result and the moves in SAN, separated by tabs. For example:
 
 ```
-python tools/measure_model.py lichess_games.tsv --depth 2 --games 300
+python tools/measure_model.py lichess_games.tsv --model stockfish --depth 2 --games 300
+python tools/measure_model.py lichess_games.tsv --model maia --games 300
 ```
 
-For each position, it records whether the model kept the move that was played, and whether that move was the model's predicted move (the low-depth search's best). It also records the move's centipawn loss at low depth. From the loss, it reports which share of played moves each threshold would keep.
+For each position, it records the rank of the move that was played among the model's moves, and whether it was the model's top move (its predicted move). For this engine's model (`--model stockfish`), it also records whether the model kept the played move, and the move's centipawn loss at low depth. From the loss, it reports which share of played moves each threshold would keep.
+
+With `--model maia`, it measures the [Maia](https://github.com/CSSLab/maia-chess) networks instead. These networks are trained on Lichess games to predict the move a human of a given rating would play. Each position uses the network for the mover's rating (Maia-1100 to Maia-1900). This needs Lc0 in `lc0/bin` and the networks in `lc0/nets`; both are downloaded separately and not kept in git. The measurements below used the Lc0 v0.32.1 Windows CUDA 12 release.
 
 First results, on 300 games per rating band, for positions from ply 6 to 15. The games file only has the first 16 plies of each game, so these are opening positions. Opponent Depth 2:
 
@@ -110,6 +113,21 @@ First results, on 300 games per rating band, for positions from ply 6 to 15. The
 - **A threshold of 20 cp would miss about 40% of the moves actually played.** The opponent would often play a move the engine never considered.
 - **Players play the predicted move only about 37% of the time**, from 27% below 1200 to 51% at 2200 and above. Most of the time they play some other reasonable move.
 - **Opponent Depth makes little difference.** Depths 1, 2 and 3 predict the played move about equally well (37.2%, 37.2% and 38.7% overall), so in the opening, depth 1 is as good a model as depth 2, at a fraction of the cost.
+
+### Comparison with Maia
+On the same 20,736 positions, Maia predicts the played move much better than this engine's model, in every rating band:
+
+| Mover's rating | Maia top 1 | This model's top 1 (depth 2) | Maia top 3 | This model's top 3 | Maia top 5 | This model's top 5 |
+|---|---|---|---|---|---|---|
+| Below 1200 | 39.3% | 27.0% | 68.8% | 50.8% | 80.7% | 63.6% |
+| 1400–1599 | 48.0% | 34.7% | 77.8% | 63.7% | 87.8% | 75.8% |
+| 1600–1799 | 48.4% | 35.9% | 77.8% | 64.0% | 88.5% | 76.5% |
+| 2200 and above | 55.0% | 51.2% | 82.2% | 79.5% | 90.5% | 88.4% |
+| All | 48.8% | 37.2% | 78.0% | 65.6% | 88.0% | 77.4% |
+
+The gap is largest for weaker players, which is where an opponent model matters most. Maia also gives each move a probability: on average it gave the played move 35.8%. That is the kind of input an expected-value search needs.
+
+Two caveats. Maia was trained on Lichess games, and some of the games in this file may have been in its training data, which would flatter its results. And these are opening positions only.
 
 ## Model Parameters
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:
