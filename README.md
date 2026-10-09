@@ -17,6 +17,8 @@ It is worth noting that the performance of stockfish will degrade dramatically a
 For now, quiescence search is left unchanged: the opponent may still play any capture there. Only the main search restricts the opponent's moves.
 
 ## Design of the Low-Depth Search
+The step-by-step implementation, with references into the Stockfish source, is in [PLAN.md](PLAN.md).
+
 The low-depth search reuses Stockfish's own search function instead of a separate implementation. The two searches must not interfere with each other, so all mutable search state is kept separate.
 
 ### A Second Worker per Thread
