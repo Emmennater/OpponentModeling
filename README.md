@@ -158,6 +158,38 @@ The more relevant question is whether the models put the right amount of probabi
 
 Raw Maia slightly overestimates how often players at this level blunder, and Maia-3 less than Maia-1. With these settings, the calibration overcorrects: it predicts less than half the blunders players actually make. A milder setting may land in between.
 
+### Tuning the calibration
+[tools/tune_calibration.py](tools/tune_calibration.py) collects the slow inputs once and saves them:
+- Maia3-23M's probabilities;
+- this engine's scores of every legal move at each calibration depth;
+- for the blunder check, the score of every move from a normal Stockfish search (MultiPV) at depth 10.
+
+It then scores a grid of settings from the saved data in seconds:
+
+```
+python tools/tune_calibration.py lichess_games.tsv --collect cal.pkl --games 500 --depths 1,2,3,4
+python tools/tune_calibration.py --data cal.pkl --depths 1,2,3,4 --temperatures 0.9,1.0 --scales 200,800,3200 --rates 0.2,0.5,0.7
+```
+
+Collecting took about 4 minutes for 2,060 positions of players rated 1200–1399. Most of that was the depth-4 scores and the depth-10 truth scores. The results, losses measured at depth 10:
+
+| Model | Log-likelihood | Top 1 | L = 100 | L = 200 | L = 300 | L = 500 |
+|---|---|---|---|---|---|---|
+| Actually played | | | 12.9% | 5.6% | 3.2% | 1.7% |
+| Maia3-23M | −1.537 | 49.5% | 15.1% | 6.4% | 4.0% | 2.1% |
+| Maia3-23M, temperature 0.9 | −1.544 | 49.5% | 13.9% | 5.7% | 3.5% | 1.8% |
+| Calibrated: depth 1, scale 200, rate 0.3 | −1.543 | 49.9% | 13.4% | 5.3% | 3.2% | 1.6% |
+| Calibrated: depth 2, scale 3200, rate 0.2, temperature 0.9 | −1.544 | 49.8% | 13.8% | 5.6% | 3.4% | 1.7% |
+| Calibrated: depth 2, scale 200, rate 0.7, 2% cut (the old default) | −1.994 | 48.0% | 9.4% | 3.1% | 1.6% | 0.7% |
+
+- **Raw Maia-3 overestimates blunders by about 20%** at every loss level. At L = 100 the gap is about three standard errors.
+- **A mild calibration corrects it,** with a rate of 0.2 to 0.3, or with a large scale_cp. So does a temperature of 0.9 alone.
+- **The old default removes about half the blunders players actually make.** Most of its drop in log-likelihood comes from the 2% cut.
+- **The calibration depth hardly matters.** Depth 1 does as well as depth 4.
+- **No setting predicts the played move noticeably better than raw Maia-3.** The differences in log-likelihood (±0.01) and top 1 (±0.5%) are within the noise of this sample.
+
+So the calibration step does not need to be built into Lc0. `OpponentModelTemperature 0.9` gives the same correction at no cost. As with the other measurements, these are opening positions only (plies 6–15), since the games file stops at ply 16.
+
 ## Opponent Modeling in Lc0
 The Stockfish version models the opponent as playing the best move, for it, from a restricted set. A second version, built on [Lc0](https://lczero.org), models the opponent as playing like a [Maia](https://github.com/CSSLab/maia-chess) network instead: at the opponent's moves, the search shares out its visits in proportion to Maia's move probabilities, so each position's value becomes the expected result against that opponent. The design and results are in [LC0_PLAN.md](LC0_PLAN.md).
 
