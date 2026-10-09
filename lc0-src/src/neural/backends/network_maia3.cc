@@ -23,8 +23,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <condition_variable>
+#include <exception>
 #include <filesystem>
+#include <future>
 #include <mutex>
+#include <optional>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "chess/position.h"
@@ -291,16 +297,37 @@ class Maia3Runner {
   float* wdl_ = nullptr;
 };
 
+// Runs Maia-3 on one thread of its own. ONNX Runtime keeps a session's CUDA
+// graph per calling thread, and Lc0 starts new search threads for every
+// search, so with the search threads calling it, every search recorded the
+// graphs again. Recording blocks CUDA calls from other threads, and when the
+// main network made one meanwhile, Lc0 failed with "operation not permitted
+// when stream is capturing". Here the graphs are recorded once, when the
+// worker thread sets the sessions up, and only replayed after that.
 class Maia3Backend : public Backend {
  public:
   explicit Maia3Backend(const Maia3Options& options) : options_(options) {
-    for (int batch_size : kBatchSizes) {
-      if (batch_size > options.max_batch && !runners_.empty()) break;
-      runners_.push_back(std::make_unique<Maia3Runner>(options, batch_size));
+    std::promise<void> ready;
+    std::future<void> started = ready.get_future();
+    worker_ = std::thread([this, &ready] { Work(ready); });
+    try {
+      started.get();
+    } catch (...) {
+      worker_.join();
+      throw;
     }
     CERR << "Opponent model: Maia-3 from " << options.model_path
          << ", rating " << options.rating << " against "
          << options.opponent_rating;
+  }
+
+  ~Maia3Backend() override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      quit_ = true;
+    }
+    job_ready_.notify_all();
+    worker_.join();
   }
 
   BackendAttributes GetAttributes() const override {
@@ -319,28 +346,86 @@ class Maia3Backend : public Backend {
   }
 
   // The largest batch run at once
-  int max_batch() const { return runners_.back()->batch_size(); }
+  int max_batch() const { return max_batch_; }
 
-  // Runs `count` positions, at most max_batch(), as Maia3Runner::Run does.
+  // Runs `count` positions, at most max_batch(), as Maia3Runner::Run does, on
+  // the worker thread, and waits for the result.
   void Run(const float* tokens, int count, float* policy, float* wdl) {
-    // Search threads share the runners' GPU buffers
-    std::lock_guard<std::mutex> lock(mutex_);
-    CheckCuda(cudaSetDevice(options_.gpu));
-    for (auto& runner : runners_) {
-      if (runner->batch_size() >= count) {
-        runner->Run(tokens, count, policy, wdl);
-        return;
-      }
-    }
-    throw Exception("Maia-3 batch larger than the largest batch size");
+    // One batch at a time: the runners' GPU buffers are shared
+    std::lock_guard<std::mutex> run_lock(run_mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    job_ = Job{tokens, count, policy, wdl};
+    job_done_ = false;
+    job_ready_.notify_all();
+    job_finished_.wait(lock, [this] { return job_done_; });
+    if (job_error_) std::rethrow_exception(std::exchange(job_error_, nullptr));
   }
 
   const Maia3Options& options() const { return options_; }
 
  private:
+  struct Job {
+    const float* tokens;
+    int count;
+    float* policy;
+    float* wdl;
+  };
+
+  void Work(std::promise<void>& ready) {
+    std::vector<std::unique_ptr<Maia3Runner>> runners;
+    try {
+      CheckCuda(cudaSetDevice(options_.gpu));
+      for (int batch_size : kBatchSizes) {
+        if (batch_size > options_.max_batch && !runners.empty()) break;
+        runners.push_back(std::make_unique<Maia3Runner>(options_, batch_size));
+      }
+      max_batch_ = runners.back()->batch_size();
+    } catch (...) {
+      ready.set_exception(std::current_exception());
+      return;
+    }
+    ready.set_value();
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+      job_ready_.wait(lock, [this] { return quit_ || job_.has_value(); });
+      if (quit_) break;
+      const Job job = *job_;
+      job_.reset();
+      lock.unlock();
+      std::exception_ptr error;
+      try {
+        const auto runner = std::find_if(
+            runners.begin(), runners.end(),
+            [&](const auto& r) { return r->batch_size() >= job.count; });
+        if (runner == runners.end()) {
+          throw Exception("Maia-3 batch larger than the largest batch size");
+        }
+        (*runner)->Run(job.tokens, job.count, job.policy, job.wdl);
+      } catch (...) {
+        error = std::current_exception();
+      }
+      lock.lock();
+      job_error_ = error;
+      job_done_ = true;
+      job_finished_.notify_all();
+    }
+    // The sessions are released on the thread that used them
+    lock.unlock();
+    runners.clear();
+  }
+
   const Maia3Options options_;
-  std::vector<std::unique_ptr<Maia3Runner>> runners_;
+  int max_batch_ = 0;
+  std::thread worker_;
+  std::mutex run_mutex_;
   std::mutex mutex_;
+  std::condition_variable job_ready_;
+  std::condition_variable job_finished_;
+  std::optional<Job> job_;
+  bool job_done_ = false;
+  bool quit_ = false;
+  std::exception_ptr job_error_;
 };
 
 void Maia3Computation::ComputeBlocking() {
