@@ -91,8 +91,8 @@ These compare the time to reach the same depth. With the model enabled, the engi
 [tools/measure_model.py](tools/measure_model.py) replays games from a file of Lichess games and compares the model with the moves actually played. It needs Python with `python-chess`. Each line of the games file holds the white rating, black rating, result and the moves in SAN, separated by tabs. For example:
 
 ```
-python tools/measure_model.py lichess_games.tsv --model stockfish --depth 2 --games 300
-python tools/measure_model.py lichess_games.tsv --model maia --games 300
+python tools/measure_model.py lichess_games.tsv --models stockfish,maia --games 300
+python tools/measure_model.py lichess_games.tsv --models maia,maia3 --calibrate --truth-depth 4 --games 300
 ```
 
 For each position, it records the rank of the move that was played among the model's moves, and whether it was the model's top move (its predicted move). For this engine's model (`--model stockfish`), it also records whether the model kept the played move, and the move's centipawn loss at low depth. From the loss, it reports which share of played moves each threshold would keep.
@@ -128,6 +128,35 @@ On the same 20,736 positions, Maia predicts the played move much better than thi
 The gap is largest for weaker players, which is where an opponent model matters most. Maia also gives each move a probability: on average it gave the played move 35.8%. That is the kind of input an expected-value search needs.
 
 Two caveats. Maia was trained on Lichess games, and some of the games in this file may have been in its training data, which would flatter its results. And these are opening positions only.
+
+### Maia-3
+`--models maia3` measures [Maia-3](https://github.com/CSSLab/maia3), a transformer that takes both players' ratings as input and covers ratings from 600 to 3000 in one network. It runs in PyTorch, through the `Maia3Net` wrapper from the StockfishTrapFinder project (`--maia3-path`), so the tool must then run under a Python environment with PyTorch and the `maia3` package. On the same positions, all three sizes predict better than Maia-1:
+
+| Model | Top 1, all | Top 1, 1200–1399 | Top 3, all | Log-likelihood, all |
+|---|---|---|---|---|
+| Maia-1 | 48.8% | 46.1% | 78.0% | −1.61 |
+| Maia3-5M | 51.4% | 47.4% | 80.2% | −1.51 |
+| Maia3-23M | 52.3% | 49.0% | 80.6% | −1.47 |
+| Maia3-79M | 52.6% | 48.9% | 80.7% | −1.46 |
+
+The 23M network is practically as good as the 79M one.
+
+### Calibrating Maia with a low-depth evaluation
+`--calibrate` also measures each Maia model with the reweighting from StockfishTrapFinder's `MaiaModel`: moves below 2% probability are dropped, the evaluation's best move is added, and each move gives up `0.7 × (1 − exp(−loss / 200))` of its probability to the evaluation's best move, where `loss` is how far its depth-2 score is below that move's. The aim is to stop the opponent model from counting on blunders a quick look would catch.
+
+It makes the predictions slightly worse: Maia-3's top move matches the played move 50.9% of the time instead of 52.6%, and its log-likelihood drops from −1.46 to −1.91. Most of the log-likelihood drop comes from the 2% cut, which removes moves that are sometimes played. Without it (`--min-prob 0`) the log-likelihood is −1.50.
+
+The more relevant question is whether the models put the right amount of probability on blunders. `--truth-depth 4` compares the probability each model puts on moves losing at least L centipawns, measured at depth 4, with how often players actually played such a move. For players rated 1200 to 1399:
+
+| Model | L = 100 | L = 200 | L = 300 | L = 500 |
+|---|---|---|---|---|
+| Actually played | 13.6% | 5.2% | 3.0% | 1.0% |
+| Maia-1 | 16.1% | 7.1% | 4.1% | 1.9% |
+| Maia-1, calibrated | 9.1% | 3.1% | 1.4% | 0.5% |
+| Maia3-79M | 14.8% | 6.3% | 3.7% | 1.6% |
+| Maia3-79M, calibrated | 8.6% | 2.8% | 1.3% | 0.4% |
+
+Raw Maia slightly overestimates how often players at this level blunder, and Maia-3 less than Maia-1. With these settings, the calibration overcorrects: it predicts less than half the blunders players actually make. A milder setting may land in between.
 
 ## Opponent Modeling in Lc0
 The Stockfish version models the opponent as playing the best move, for it, from a restricted set. A second version, built on [Lc0](https://lczero.org), models the opponent as playing like a [Maia](https://github.com/CSSLab/maia-chess) network instead: at the opponent's moves, the search shares out its visits in proportion to Maia's move probabilities, so each position's value becomes the expected result against that opponent. The design and results are in [LC0_PLAN.md](LC0_PLAN.md).
