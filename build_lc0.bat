@@ -5,7 +5,8 @@ rem Usage: build_lc0.bat [CC]
 rem   CC is the GPU's CUDA compute capability without the dot, for example 89
 rem   for an RTX 40xx. By default it is read from nvidia-smi.
 rem
-rem Needs: the CUDA toolkit (CUDA_PATH set by its installer), Visual Studio
+rem Needs: the CUDA toolkit (found through CUDA_PATH, or in its default
+rem location), Visual Studio
 rem 2022 or its Build Tools with the C++ workload, and meson and ninja
 rem ("python -m pip install --user meson ninja").
 rem
@@ -18,10 +19,20 @@ rem default the nvidia-cudnn-cu13 wheel in .venv), which ONNX Runtime needs.
 
 setlocal
 
+rem CUDA_PATH is set machine-wide by the CUDA installer, but terminals started
+rem before the install (VS Code's included) do not have it. Read it from the
+rem registry then, or take the newest toolkit in the default location.
 if not defined CUDA_PATH (
-    echo CUDA_PATH is not set. Install the CUDA toolkit first.
+    for /f "tokens=2,*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v CUDA_PATH 2^>nul') do set "CUDA_PATH=%%b"
+)
+if not defined CUDA_PATH (
+    for /d %%d in ("%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v*") do set "CUDA_PATH=%%d"
+)
+if not exist "%CUDA_PATH%\bin\nvcc.exe" (
+    echo Could not find the CUDA toolkit. Install it, or set CUDA_PATH to its folder.
     exit /b 1
 )
+echo Using the CUDA toolkit at %CUDA_PATH%
 
 rem The Visual Studio C++ environment, unless it is already loaded
 where /q cl
