@@ -154,7 +154,7 @@ Search::Search(const NodeTree& tree, Backend* backend,
                std::chrono::steady_clock::time_point start_time,
                std::unique_ptr<SearchStopper> stopper, bool infinite,
                bool ponder, const OptionsDict& options,
-               SyzygyTablebase* syzygy_tb)
+               SyzygyTablebase* syzygy_tb, Backend* opponent_backend)
     : ok_to_respond_bestmove_(!infinite && !ponder),
       stopper_(std::move(stopper)),
       root_node_(tree.GetCurrentHead()),
@@ -162,6 +162,7 @@ Search::Search(const NodeTree& tree, Backend* backend,
       played_history_(tree.GetPositionHistory()),
       backend_(backend),
       backend_attributes_(backend->GetAttributes()),
+      opponent_backend_(opponent_backend),
       params_(options),
       searchmoves_(searchmoves),
       start_time_(start_time),
@@ -1253,6 +1254,9 @@ void SearchWorker::ExecuteOneIteration() {
 void SearchWorker::InitializeIteration(
     std::unique_ptr<BackendComputation> computation) {
   computation_ = std::move(computation);
+  opponent_computation_ = search_->opponent_backend_
+                              ? search_->opponent_backend_->CreateComputation()
+                              : nullptr;
   minibatch_.clear();
   minibatch_.reserve(2 * target_minibatch_size_);
 }
@@ -1464,6 +1468,23 @@ void SearchWorker::ProcessPickedTask(int start_idx, int end_idx,
                                        },
                                        picked_node.eval->AsPtr()) ==
                                    BackendComputation::FETCHED_IMMEDIATELY;
+
+        // Opponent modeling: opponent nodes also get the opponent model's
+        // move probabilities. Depth counts the root as 1, so the opponent is
+        // to move at even depths.
+        if (opponent_computation_ && picked_node.depth % 2 == 0) {
+          picked_node.opponent_eval = std::make_unique<EvalResult>();
+          picked_node.opponent_eval->p.resize(legal_moves.size());
+          picked_node.opponent_queried = true;
+          picked_node.opponent_cache_hit =
+              opponent_computation_->AddInput(
+                  EvalPosition{
+                      .pos = history.GetPositions(),
+                      .legal_moves = legal_moves,
+                  },
+                  picked_node.opponent_eval->AsPtr()) ==
+              BackendComputation::FETCHED_IMMEDIATELY;
+        }
       }
     }
     if (params_.GetOutOfOrderEval() && picked_node.CanEvalOutOfOrder()) {
@@ -1708,15 +1729,79 @@ void SearchWorker::PickNodesToExtendTask(
       const float cpuct = ComputeCpuct(params_, node->GetN(), is_root_node);
       const float puct_mult =
           cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
+      // Opponent modeling: at opponent nodes, visits are shared out in
+      // proportion to the opponent model's move probabilities, instead of
+      // going to the best-looking move. A node's value is the average of its
+      // children's values weighted by their visits, so it becomes the
+      // opponent's expected value. Depth counts the root as 1, so the opponent
+      // is to move at even depths.
+      const bool opponent_node = search_->opponent_backend_ != nullptr &&
+                                 (current_path.size() + base_depth) % 2 == 0;
       int cache_filled_idx = -1;
       while (cur_limit > 0) {
+        int best_idx = -1;
+        int new_visits = 0;
+        best_edge.Reset();
+
+        if (opponent_node) {
+          // Every candidate's visits are needed, not just up to the first
+          // unvisited ones.
+          for (int idx = cache_filled_idx + 1; idx < max_needed; ++idx) {
+            if (idx == 0) {
+              cur_iters[idx] = node->Edges();
+            } else {
+              cur_iters[idx] = cur_iters[idx - 1];
+              ++cur_iters[idx];
+            }
+            current_nstarted[idx] = cur_iters[idx].GetNStarted();
+            current_score[idx] = current_pol[idx] * puct_mult /
+                                     (1 + current_nstarted[idx]) +
+                                 current_util[idx];
+            cache_filled_idx = idx;
+          }
+          int total = 0;
+          for (int idx = 0; idx < max_needed; ++idx) {
+            total += current_nstarted[idx];
+          }
+
+          // The next visit goes to the move furthest below its share of the
+          // visits, counting the visit about to be made.
+          float best = std::numeric_limits<float>::lowest();
+          float second_best = std::numeric_limits<float>::lowest();
+          int second_best_idx = -1;
+          for (int idx = 0; idx < max_needed; ++idx) {
+            const float deficit =
+                current_pol[idx] * (total + 1) - current_nstarted[idx];
+            if (deficit > best) {
+              second_best = best;
+              second_best_idx = best_idx;
+              best = deficit;
+              best_idx = idx;
+            } else if (deficit > second_best) {
+              second_best = deficit;
+              second_best_idx = idx;
+            }
+          }
+          best_edge = cur_iters[best_idx];
+
+          if (second_best_idx >= 0) {
+            // Each visit to the best move shrinks its lead over the second
+            // best by 1 - P(best) + P(second best).
+            const float lead_lost_per_visit =
+                1.0f - current_pol[best_idx] + current_pol[second_best_idx];
+            const int visits_to_change_best = static_cast<int>(std::min(
+                (best - second_best) / lead_lost_per_visit + 1.0f, 1e9f));
+            max_limit = std::min(max_limit, visits_to_change_best);
+            new_visits = std::min(cur_limit, visits_to_change_best);
+          } else {
+            new_visits = cur_limit;
+          }
+        } else {
         // Perform UCT for current node.
         float best = std::numeric_limits<float>::lowest();
-        int best_idx = -1;
         float best_without_u = std::numeric_limits<float>::lowest();
         float second_best = std::numeric_limits<float>::lowest();
         bool can_exit = false;
-        best_edge.Reset();
         for (int idx = 0; idx < max_needed; ++idx) {
           if (idx > cache_filled_idx) {
             if (idx == 0) {
@@ -1773,7 +1858,6 @@ void SearchWorker::PickNodesToExtendTask(
             can_exit = true;
           }
         }
-        int new_visits = 0;
         if (second_best_edge) {
           int estimated_visits_to_change_best = std::numeric_limits<int>::max();
           if (best_without_u < second_best) {
@@ -1790,6 +1874,7 @@ void SearchWorker::PickNodesToExtendTask(
         } else {
           // No second best - only one edge, so everything goes in here.
           new_visits = cur_limit;
+        }
         }
         if (best_idx >= vtp_last_filled.back()) {
           auto* vtp_array = visits_to_perform.back().get()->data();
@@ -2132,6 +2217,9 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
 // ~~~~~~~~~~~~~~~~~~~~~~
 void SearchWorker::RunNNComputation() {
   if (computation_->UsedBatchSize() > 0) computation_->ComputeBlocking();
+  if (opponent_computation_ && opponent_computation_->UsedBatchSize() > 0) {
+    opponent_computation_->ComputeBlocking();
+  }
 }
 
 // 5. Retrieve NN computations (and terminal values) into nodes.
@@ -2171,8 +2259,13 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
                    : params_.GetWDLRescaleDiff(),
                sign, false, params_.GetWDLMaxS());
   }
+  // Opponent modeling: at opponent nodes, the move probabilities come from the
+  // opponent model. The value still comes from the main network.
+  const std::vector<float>& policy = node_to_process->opponent_queried
+                                         ? node_to_process->opponent_eval->p
+                                         : node_to_process->eval->p;
   for (size_t p_idx = 0; auto& edge : node->Edges()) {
-    edge.edge()->SetP(node_to_process->eval->p[p_idx++]);
+    edge.edge()->SetP(policy[p_idx++]);
   }
   // Add Dirichlet noise if enabled and at root.
   if (params_.GetNoiseEpsilon() && node == search_->root_node_) {
@@ -2209,8 +2302,13 @@ void SearchWorker::DoBackupUpdateSingleNode(
   }
 
   // For the first visit to a terminal, maybe update parent bounds too.
-  auto update_parent_bounds =
-      params_.GetStickyEndgames() && node->IsTerminal() && !node->GetN();
+  // Opponent modeling: proven results are propagated as minimax (one winning
+  // child makes the parent a win), which does not hold at opponent nodes, where
+  // the opponent plays its winning move only with some probability. So they
+  // are not propagated while the opponent model is on.
+  auto update_parent_bounds = params_.GetStickyEndgames() &&
+                              !search_->opponent_backend_ &&
+                              node->IsTerminal() && !node->GetN();
 
   // Backup V value up to a root. After 1 visit, V = Q.
   float v = node_to_process.eval->q;

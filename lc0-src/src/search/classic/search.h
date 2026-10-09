@@ -49,12 +49,16 @@ namespace classic {
 
 class Search {
  public:
+  // opponent_backend is the opponent model: a network that predicts the
+  // opponent's moves, such as Maia. When given, the opponent's moves are
+  // sampled from it instead of searched for the best (see LC0_PLAN.md).
   Search(const NodeTree& tree, Backend* network,
          std::unique_ptr<UciResponder> uci_responder,
          const MoveList& searchmoves,
          std::chrono::steady_clock::time_point start_time,
          std::unique_ptr<SearchStopper> stopper, bool infinite, bool ponder,
-         const OptionsDict& options, SyzygyTablebase* syzygy_tb);
+         const OptionsDict& options, SyzygyTablebase* syzygy_tb,
+         Backend* opponent_backend = nullptr);
 
   ~Search();
 
@@ -166,6 +170,8 @@ class Search {
 
   Backend* const backend_;
   BackendAttributes backend_attributes_;
+  // Opponent modeling: the opponent model's network, or null when off.
+  Backend* const opponent_backend_;
   const SearchParams params_;
   const MoveList searchmoves_;
   const std::chrono::steady_clock::time_point start_time_;
@@ -306,7 +312,8 @@ class SearchWorker {
     bool IsExtendable() const { return !is_collision && !node->IsTerminal(); }
     bool IsCollision() const { return is_collision; }
     bool CanEvalOutOfOrder() const {
-      return is_cache_hit || node->IsTerminal();
+      return (is_cache_hit && (!opponent_queried || opponent_cache_hit)) ||
+             node->IsTerminal();
     }
 
     // The node to extend.
@@ -321,6 +328,11 @@ class SearchWorker {
     bool nn_queried = false;
     bool is_cache_hit = false;
     bool is_collision = false;
+    // Opponent modeling: at opponent nodes, the opponent model's evaluation,
+    // whose move probabilities replace the main network's.
+    std::unique_ptr<EvalResult> opponent_eval;
+    bool opponent_queried = false;
+    bool opponent_cache_hit = false;
     // Only populated for visits,
     std::vector<Move> moves_to_visit;
 
@@ -424,6 +436,8 @@ class SearchWorker {
   // List of nodes to process.
   std::vector<NodeToProcess> minibatch_;
   std::unique_ptr<BackendComputation> computation_;
+  // Opponent modeling: the opponent model's computation, or null when off.
+  std::unique_ptr<BackendComputation> opponent_computation_;
   int task_workers_;
   int target_minibatch_size_;
   int max_out_of_order_;

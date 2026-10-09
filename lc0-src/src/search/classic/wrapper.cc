@@ -28,6 +28,8 @@
 #include "chess/gamestate.h"
 #include "search/classic/search.h"
 #include "search/classic/stoppers/factory.h"
+#include "neural/memcache.h"
+#include "neural/register.h"
 #include "search/register.h"
 #include "search/search.h"
 #include "src/neural/shared_params.h"
@@ -48,6 +50,24 @@ const OptionId kClearTree{
      .uci_option = "ClearTree",
      .help_text = "Clear the tree before the next search.",
      .visibility = OptionId::kProOnly}};
+
+// Opponent modeling (see LC0_PLAN.md)
+const OptionId kOpponentModelWeightsId{
+    {.long_flag = "opponent-model-weights",
+     .uci_option = "OpponentModelWeights",
+     .help_text =
+         "Network that predicts the opponent's moves, such as a Maia network. "
+         "When set, the opponent's moves are sampled from it in proportion to "
+         "its move probabilities, instead of searched for the best. Empty "
+         "turns opponent modeling off.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId kOpponentModelTemperatureId{
+    {.long_flag = "opponent-model-temperature",
+     .uci_option = "OpponentModelTemperature",
+     .help_text =
+         "Temperature for the opponent model's move probabilities. Above 1 "
+         "makes the opponent less predictable, below 1 more.",
+     .visibility = OptionId::kAlwaysVisible}};
 
 class ClassicSearch : public SearchBase {
  public:
@@ -71,10 +91,22 @@ class ClassicSearch : public SearchBase {
     if (search_) search_->Abort();
   }
 
+  // Opponent modeling: creates or removes the opponent model's backend when its
+  // options change, and clears the tree when its values no longer apply.
+  void UpdateOpponentModel();
+
   const OptionsDict* options_;
   std::unique_ptr<TimeManager> time_manager_;
   std::unique_ptr<Search> search_;
   std::unique_ptr<NodeTree> tree_;
+
+  // Opponent modeling: the backend running the opponent model, the options it
+  // was created with, and what the tree was last searched with.
+  std::unique_ptr<OptionsDict> opponent_options_;
+  std::unique_ptr<Backend> opponent_backend_;
+  std::string opponent_weights_;
+  float opponent_temperature_ = 1.0f;
+  bool opponent_black_to_move_ = false;
   std::optional<std::chrono::steady_clock::time_point> move_start_time_;
 };
 
@@ -108,10 +140,46 @@ void ClassicSearch::SetPosition(const GameState& pos) {
   if (!is_same_game) time_manager_ = MakeTimeManager(*options_);
 }
 
+void ClassicSearch::UpdateOpponentModel() {
+  const std::string weights =
+      options_->Get<std::string>(kOpponentModelWeightsId);
+  const float temperature = options_->Get<float>(kOpponentModelTemperatureId);
+  const bool black_to_move = tree_->HeadPosition().IsBlackToMove();
+  const bool model_changed = weights != opponent_weights_ ||
+                             (!weights.empty() &&
+                              temperature != opponent_temperature_);
+
+  // The tree's values and opponent-node move probabilities depend on the
+  // model and on which side is the opponent: the side not to move at the root.
+  if (model_changed ||
+      (!weights.empty() && black_to_move != opponent_black_to_move_)) {
+    tree_->TrimTreeAtHead();
+  }
+  opponent_black_to_move_ = black_to_move;
+
+  if (!model_changed) return;
+  opponent_backend_.reset();
+  opponent_options_.reset();
+  opponent_weights_ = weights;
+  opponent_temperature_ = temperature;
+  if (weights.empty()) return;
+
+  // The same backend settings as the main network, with the opponent model's
+  // weights and temperature. Lc0 applies the temperature inside the backend.
+  opponent_options_ = std::make_unique<OptionsDict>(options_);
+  opponent_options_->Set<std::string>(SharedBackendParams::kWeightsId, weights);
+  opponent_options_->Set<float>(SharedBackendParams::kPolicySoftmaxTemp,
+                                temperature);
+  opponent_backend_ =
+      CreateMemCache(BackendManager::Get()->CreateFromParams(*opponent_options_),
+                     *opponent_options_);
+}
+
 void ClassicSearch::StartSearch(const GoParams& params) {
   auto forwarder =
       std::make_unique<NonOwningUciRespondForwarder>(uci_responder_);
   if (options_->Get<Button>(kClearTree).TestAndReset()) tree_->TrimTreeAtHead();
+  UpdateOpponentModel();
 
   const auto cache_size =
       options_->Get<int>(SharedBackendParams::kNNCacheSizeId);
@@ -129,7 +197,7 @@ void ClassicSearch::StartSearch(const GoParams& params) {
       *tree_, backend_, std::move(forwarder),
       StringsToMovelist(params.searchmoves, tree_->HeadPosition().GetBoard()),
       *move_start_time_, std::move(stopper), params.infinite, params.ponder,
-      *options_, syzygy_tb_);
+      *options_, syzygy_tb_, opponent_backend_.get());
 
   LOGFILE << "Timer started at "
           << FormatTime(SteadyClockToSystemClock(*move_start_time_));
@@ -149,6 +217,8 @@ class ClassicSearchFactory : public SearchFactory {
     PopulateTimeManagementOptions(RunType::kUci, parser);
 
     parser->Add<ButtonOption>(kClearTree);
+    parser->Add<StringOption>(kOpponentModelWeightsId) = "";
+    parser->Add<FloatOption>(kOpponentModelTemperatureId, 0.1f, 10.0f) = 1.0f;
   }
 };
 
