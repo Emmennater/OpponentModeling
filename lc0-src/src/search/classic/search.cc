@@ -688,6 +688,8 @@ void Search::EnsureBestMoveKnown() REQUIRES(nodes_mutex_)
   if (bestmove_is_sent_) return;
   if (root_node_->GetN() == 0) return;
   if (!root_node_->HasChildren()) return;
+  // Ends a round the last visits may have completed.
+  UpdateRootHalving();
 
   float temperature = params_.GetTemperature();
   const int cutoff_move = params_.GetTemperatureCutoffMove();
@@ -816,6 +818,23 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
         return a.GetM(0.0f) > b.GetM(0.0f);
       });
 
+  // Opponent modeling: with sequential halving at the root, the best move is
+  // the one ranked best at the last halving, not the one with most visits,
+  // unless a proven result decides.
+  if (parent == root_node_ && root_halving_.leader && !edges.empty()) {
+    const auto is_proven = [](const EdgeAndNode& edge) {
+      return edge.GetN() > 0 && edge.IsTerminal() && edge.GetWL(0.0f) != 0.0f;
+    };
+    const auto leader = std::find_if(
+        edges.begin(), edges.end(), [&](const EdgeAndNode& edge) {
+          return edge.GetMove() == *root_halving_.leader;
+        });
+    if (leader != edges.end() && !is_proven(edges.front()) &&
+        !is_proven(*leader)) {
+      std::rotate(edges.begin(), leader, leader + 1);
+    }
+  }
+
   if (count < static_cast<int>(edges.size())) {
     edges.resize(count);
   }
@@ -826,6 +845,83 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
 EdgeAndNode Search::GetBestChildNoTemperature(Node* parent, int depth) const {
   auto res = GetBestChildrenNoTemperature(parent, 1, depth);
   return res.empty() ? EdgeAndNode() : res.front();
+}
+
+bool Search::UsesRootHalving() const {
+  return root_halving_.initialized && !root_halving_.initial.empty();
+}
+
+void Search::StartRootHalvingRun() {
+  auto& halving = root_halving_;
+  halving.candidates = halving.initial;
+  halving.target = std::max<int64_t>(
+      1, halving.budget / (halving.rounds * halving.initial.size()));
+}
+
+void Search::UpdateRootHalving() {
+  auto& halving = root_halving_;
+  if (!halving.initialized) {
+    if (!opponent_backend_ || params_.GetOpponentRootCandidates() < 2 ||
+        root_node_->GetN() == 0 || !root_node_->HasChildren()) {
+      // Set up later, once the root is expanded, or never.
+      if (!opponent_backend_ || params_.GetOpponentRootCandidates() < 2) {
+        halving.initialized = true;
+      }
+      return;
+    }
+    halving.initialized = true;
+    // Edges are sorted by prior, highest first.
+    int index = 0;
+    for (const auto& edge : root_node_->Edges()) {
+      if (root_move_filter_.empty() ||
+          std::find(root_move_filter_.begin(), root_move_filter_.end(),
+                    edge.GetMove()) != root_move_filter_.end()) {
+        halving.initial.push_back(index);
+      }
+      if (static_cast<int>(halving.initial.size()) ==
+          params_.GetOpponentRootCandidates()) {
+        break;
+      }
+      ++index;
+    }
+    if (halving.initial.size() < 2) {
+      halving.initial.clear();
+      return;
+    }
+    halving.rounds = static_cast<int>(
+        std::ceil(std::log2(static_cast<double>(halving.initial.size()))));
+    // The first run's first round gives each candidate 16 visits, or more if
+    // the root already has visits from an earlier search.
+    halving.budget = std::max<int64_t>(
+        16 * halving.rounds * static_cast<int64_t>(halving.initial.size()),
+        root_node_->GetN());
+    StartRootHalvingRun();
+  }
+  if (!UsesRootHalving()) return;
+
+  std::vector<EdgeAndNode> edges;
+  for (const auto& edge : root_node_->Edges()) edges.push_back(edge);
+  const float draw_score = GetDrawScore(/* is_odd_depth= */ false);
+  // Each pass ends a round, if every candidate has the visits it needs.
+  while (std::all_of(halving.candidates.begin(), halving.candidates.end(),
+                     [&](int index) {
+                       return edges[index].GetN() >= halving.target;
+                     })) {
+    std::stable_sort(halving.candidates.begin(), halving.candidates.end(),
+                     [&](int a, int b) {
+                       return edges[a].GetQ(0.0f, draw_score) >
+                              edges[b].GetQ(0.0f, draw_score);
+                     });
+    halving.leader = edges[halving.candidates.front()].GetMove();
+    halving.candidates.resize((halving.candidates.size() + 1) / 2);
+    if (halving.candidates.size() == 1) {
+      halving.budget *= 2;
+      StartRootHalvingRun();
+    } else {
+      halving.target +=
+          halving.budget / (halving.rounds * halving.candidates.size());
+    }
+  }
 }
 
 // Returns a child of a root chosen according to weighted-by-temperature visit
@@ -995,6 +1091,15 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
     }
     if (!max_n_has_max_q_plus_m) {
       stats->time_usage_hint_ = IterationStats::TimeUsageHint::kNeedMoreTime;
+    }
+    // Opponent modeling: with sequential halving, the best move is not the
+    // one with most visits, so stoppers that judge from visits, such as
+    // smart pruning, would stop early for the wrong reasons. Equal counts
+    // switch those judgments off and keep the other checks.
+    if (UsesRootHalving()) {
+      std::fill(stats->edge_n.begin(), stats->edge_n.end(),
+                static_cast<uint32_t>(max_n));
+      stats->time_usage_hint_ = IterationStats::TimeUsageHint::kNormal;
     }
   }
 }
@@ -1697,8 +1802,15 @@ void SearchWorker::PickNodesToExtendTask(
       // Which we are putting off until after policy is copied so we can create
       // visited policy without having to cache it in the node (allowing the
       // node to stay at 64 bytes).
+      // Opponent modeling: sequential halving at the root, see RootHalving.
+      // The root is picked from with nodes_mutex_ held exclusively.
+      bool root_halving = false;
+      if (is_root_node) {
+        search_->UpdateRootHalving();
+        root_halving = search_->UsesRootHalving();
+      }
       int max_needed = node->GetNumEdges();
-      if (!is_root_node || root_move_filter.empty()) {
+      if (!is_root_node || (root_move_filter.empty() && !root_halving)) {
         max_needed = std::min(max_needed, node->GetNStarted() + cur_limit + 2);
       }
       node->CopyPolicy(max_needed, current_pol.data());
@@ -1743,7 +1855,42 @@ void SearchWorker::PickNodesToExtendTask(
         int new_visits = 0;
         best_edge.Reset();
 
-        if (opponent_node) {
+        if (root_halving) {
+          for (int idx = cache_filled_idx + 1; idx < max_needed; ++idx) {
+            if (idx == 0) {
+              cur_iters[idx] = node->Edges();
+            } else {
+              cur_iters[idx] = cur_iters[idx - 1];
+              ++cur_iters[idx];
+            }
+            current_nstarted[idx] = cur_iters[idx].GetNStarted();
+            current_score[idx] = current_pol[idx] * puct_mult /
+                                     (1 + current_nstarted[idx]) +
+                                 current_util[idx];
+            cache_filled_idx = idx;
+          }
+          // The next visits go to the candidate with the fewest, until it
+          // passes the next fewest. An unvisited candidate gets one visit, as
+          // it has to be evaluated before it can take more.
+          int64_t fewest = std::numeric_limits<int64_t>::max();
+          int64_t second_fewest = std::numeric_limits<int64_t>::max();
+          for (int idx : search_->root_halving_.candidates) {
+            const int64_t n = current_nstarted[idx];
+            if (n < fewest) {
+              second_fewest = fewest;
+              fewest = n;
+              best_idx = idx;
+            } else if (n < second_fewest) {
+              second_fewest = n;
+            }
+          }
+          best_edge = cur_iters[best_idx];
+          new_visits =
+              fewest == 0 ? 1
+                          : static_cast<int>(std::min<int64_t>(
+                                cur_limit, second_fewest - fewest + 1));
+          max_limit = std::min(max_limit, new_visits);
+        } else if (opponent_node) {
           // Every candidate's visits are needed, not just up to the first
           // unvisited ones.
           for (int idx = cache_filled_idx + 1; idx < max_needed; ++idx) {

@@ -299,13 +299,16 @@ class SearchParams : public BaseSearchParams {
     return options_.Get<int>(kMaxPrefetchBatchId);
   }
   int GetSolidTreeThreshold() const { return kSolidTreeThreshold; }
+  int GetOpponentRootCandidates() const { return kOpponentRootCandidates; }
 
   // Search parameter IDs.
   static const OptionId kMaxPrefetchBatchId;
   static const OptionId kSolidTreeThresholdId;
+  static const OptionId kOpponentRootCandidatesId;
 
  private:
   const int kSolidTreeThreshold;
+  const int kOpponentRootCandidates;
 };
 }  // namespace classic
 }  // namespace lczero

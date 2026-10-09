@@ -19,6 +19,7 @@ Built on [Lc0](https://lczero.org), this version models the opponent as playing 
 It needs two networks: a main network for its own play, and a Maia network for the opponent. These UCI options control the opponent model:
 - **OpponentModelWeights:** the Maia network file. It can be a Maia-3 network exported to ONNX, for example `lc0/nets/maia3-23m-fp16.onnx`, or a Maia-1 network, for example `lc0/nets/maia-1300.pb.gz`. Empty turns opponent modeling off.
 - **OpponentModelRating** and **OpponentModelOwnRating** (default 1300 each), for Maia-3 only: the opponent's rating, and the rating of the side the engine plays.
+- **OpponentRootCandidates** (default 8): the number of root moves the engine compares at equal visits, by sequential halving, before choosing its move. With the opponent model, a move's score rises the more it is searched, so the usual rule would favor whichever move took the lead first (see [LC0_PLAN.md](LC0_PLAN.md)). 0 or 1 turns this off.
 - **OpponentModelTemperature** (default 1.0): above 1 makes the opponent less predictable, below 1 more. Maia-3 at 1.0 matches how often real players blunder (see [MEASUREMENTS.md](MEASUREMENTS.md)).
 
 The fp16 23M Maia-3 network is the best balance of accuracy and speed: about 24,000 nodes per second, against 69,000 with Maia-1. The first `go` after setting the network takes a few seconds longer, while it loads.

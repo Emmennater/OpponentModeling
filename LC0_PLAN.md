@@ -57,6 +57,7 @@ Lc0 marks positions as proven wins, losses or draws and propagates them up the t
 - `OpponentModelWeights`: the Maia network file. Empty turns opponent modeling off, so Lc0 behaves exactly as normal.
 - `OpponentModelTemperature`: a temperature for Maia's probabilities, 1.0 by default. Above 1 flattens them, so the opponent is less predictable; below 1 sharpens them.
 - `OpponentModelRating` and `OpponentModelOwnRating` (added with Maia-3, see below): the modeled opponent's rating, and the rating of the side the engine plays, both 1300 by default. Maia-3 takes both as inputs. Maia-1 networks ignore them, since each is trained for one rating.
+- `OpponentRootCandidates` (added later, see "Choosing the move at the root"): the number of root moves compared by sequential halving, 8 by default. 0 or 1 uses Lc0's usual rule.
 
 ### What stays the same
 - Our nodes, including the root: PUCT with the main network, as usual.
@@ -109,6 +110,30 @@ Implemented as planned, in [search.h](lc0-src/src/search/classic/search.h), [sea
   Before CUDA graphs and the vectorized promotions, Maia3-23M fp16 ran at about 10,000. The networks are now limited by their computation: at batch 256, the 23M network takes about 80 microseconds per position.
 - **Different choices.** With Maia-1300, the engine plays `2.d4` after `1.e4 c5` (plain Lc0: `2.Nf3`), and `Qc3` instead of `Bxd6` in the `Bf4` line from the Stockfish testing.
 - **Scores are expected values,** so they are far from plain Lc0's: for example +1.92 from the start position against Maia-1300, against +0.28. A strong engine playing a 1300 player is expected to win from most positions. What matters for choosing a move is how the candidates compare.
+
+### Choosing the move at the root
+**The problem.** With the opponent model, a move's value tends to rise the more it is searched, because a deeper search finds more of the opponent's likely mistakes. Lc0's usual rule (PUCT) gives most visits to the move that currently looks best, and plays the move with most visits. So whichever move takes the lead early gets more visits, looks better for it, and keeps the lead. From the start position, `1.Nf3` took 127,000 of 135,000 visits and rose from +0.10 to +0.63. Its rivals stayed near their first estimates. Given 51,000 nodes each with `searchmoves`, the moves scored:
+
+| Move | Score |
+|---|---|
+| `1.e4` | +2.47 |
+| `1.Nf3` | +1.76 |
+| `1.d4` | +1.70 |
+| `1.c4` | +1.69 |
+
+Raising the root's exploration (`RootHasOwnCpuctParams`, `CPuctAtRoot` 5 or 8) only changed which move won the race: one move still took 93% of the visits.
+
+**Sequential halving.** With the opponent model on, the root uses sequential halving, as in Gumbel MuZero, instead:
+- **Rounds.** The `OpponentRootCandidates` moves with the highest priors (8 by default) get equal visits. When all of them reach the round's target, they are ranked by value, the worse half is dropped, and the rest go on to the next round.
+- **Runs.** A run spreads a budget of visits evenly over its rounds, `ceil(log2(candidates))` of them. When one move is left, a new run starts with twice the budget, so the search can go on for any time. The new run's targets are absolute visit counts, so moves already above them take no visits until the others catch up.
+- **The best move** is the one ranked best at the last halving, so moves are only ever compared at equal visits. The reported score and principal variation follow it, unless a proven win or loss decides.
+- **Stopping.** Lc0's smart pruning stops a search once the most-visited move can no longer be caught. Here, visits no longer decide the move, so the stoppers are given equal visit counts, which turns that check off. A search now runs to its full node or time limit. In timed games that uses more clock time per move.
+
+The state lives in `Search::RootHalving` and is updated whenever the root is picked from, with `nodes_mutex_` held exclusively. The visits go to the candidate with the fewest visits started, up to the next fewest.
+
+**Results**, 300,000 nodes:
+- **From the start position,** the candidates finish within about 0.06 of each other: `1.e4` with 4 or 16 candidates, `1.d4` with 8. Against a 1300 player the first move matters little.
+- **In the test game,** the engine finds the same moves as with PUCT: `6.e4` after `5...b6`, and `8.Bxa6` after `7...a6`. `Bxa6` wins the equal-visit comparison clearly, 0.961 against 0.912 for `Nc3`, at about 68,000 visits each.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

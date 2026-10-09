@@ -535,6 +535,14 @@ const OptionId SearchParams::kSolidTreeThresholdId{
     "solid-tree-threshold", "SolidTreeThreshold",
     "Only nodes with at least this number of visits will be considered for "
     "solidification for improved cache locality."};
+const OptionId SearchParams::kOpponentRootCandidatesId{
+    "opponent-root-candidates", "OpponentRootCandidates",
+    "With an opponent model, the number of root moves compared by sequential "
+    "halving: the moves the main network rates highest get equal visits, and "
+    "the worse half by value is dropped, round after round. With an opponent "
+    "model a move's value tends to rise as it is searched deeper, so the usual "
+    "rule, which gives most visits to the move that looks best, favors "
+    "whichever move took the lead first. 0 or 1 turns this off."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -632,6 +640,7 @@ void SearchParams::Populate(OptionsParser* options) {
   BaseSearchParams::Populate(options);
   options->Add<IntOption>(kMaxPrefetchBatchId, 0, 1024) = DEFAULT_MAX_PREFETCH;
   options->Add<IntOption>(kSolidTreeThresholdId, 1, 2000000000) = 100;
+  options->Add<IntOption>(kOpponentRootCandidatesId, 0, 64) = 8;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
@@ -723,6 +732,7 @@ BaseSearchParams::BaseSearchParams(const OptionsDict& options)
 
 SearchParams::SearchParams(const OptionsDict& options)
     : BaseSearchParams(options),
-      kSolidTreeThreshold(options.Get<int>(kSolidTreeThresholdId)) {}
+      kSolidTreeThreshold(options.Get<int>(kSolidTreeThresholdId)),
+      kOpponentRootCandidates(options.Get<int>(kOpponentRootCandidatesId)) {}
 }  // namespace classic
 }  // namespace lczero

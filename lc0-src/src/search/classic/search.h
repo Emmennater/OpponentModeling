@@ -184,6 +184,35 @@ class Search {
 
   mutable SharedMutex nodes_mutex_;
   EdgeAndNode current_best_edge_ GUARDED_BY(nodes_mutex_);
+
+  // Opponent modeling: sequential halving at the root. With an opponent model,
+  // a move's value tends to rise as it is searched deeper, because a deeper
+  // search finds more of the opponent's likely mistakes. The usual rule, which
+  // gives most visits to the move that looks best, then favors whichever move
+  // took the lead first. Instead, the candidates get equal visits, and the
+  // worse half by value is dropped, round after round, so moves are compared
+  // only at equal visits. A run spreads a budget of visits over its rounds;
+  // once one candidate is left, a new run starts with twice the budget, so
+  // the search can go on for any time.
+  struct RootHalving {
+    bool initialized = false;
+    // Root edge indices of the candidates, highest prior first, and those
+    // left in the current round.
+    std::vector<int> initial;
+    std::vector<int> candidates;
+    int rounds = 0;      // Rounds in a run.
+    int64_t budget = 0;  // Visits a run spreads over its rounds.
+    int64_t target = 0;  // Visits each candidate needs to end the round.
+    // The move ranked best at the last halving, which is the best move.
+    std::optional<Move> leader;
+  };
+  RootHalving root_halving_ GUARDED_BY(nodes_mutex_);
+  // Whether the root uses sequential halving. Valid after UpdateRootHalving().
+  bool UsesRootHalving() const REQUIRES(nodes_mutex_);
+  // Sets the candidates up on the first call, and ends every round whose
+  // candidates all have the target visits.
+  void UpdateRootHalving() REQUIRES(nodes_mutex_);
+  void StartRootHalvingRun() REQUIRES(nodes_mutex_);
   Edge* last_outputted_info_edge_ GUARDED_BY(nodes_mutex_) = nullptr;
   ThinkingInfo last_outputted_uci_info_ GUARDED_BY(nodes_mutex_);
   int64_t total_playouts_ GUARDED_BY(nodes_mutex_) = 0;
