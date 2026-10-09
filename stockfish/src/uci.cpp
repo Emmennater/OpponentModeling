@@ -593,6 +593,15 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
     return int(std::round(100 * int(v) / a));
 }
 
+// Inverse of to_cp(): converts centipawns, as reported to the GUI for this
+// position, to internal units.
+Value UCIEngine::from_cp(int cp, const Position& pos) {
+
+    auto [a, b] = win_rate_params(pos);
+
+    return Value(std::round(cp * a / 100));
+}
+
 std::string UCIEngine::wdl(Value v, const Position& pos) {
     std::stringstream ss;
 

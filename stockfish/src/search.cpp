@@ -41,6 +41,7 @@
 #include "movepick.h"
 #include "nnue/network.h"
 #include "nnue/nnue_accumulator.h"
+#include "opponent_model.h"
 #include "position.h"
 #include "syzygy/tbprobe.h"
 #include "thread.h"
@@ -180,8 +181,22 @@ Search::Worker::Worker(SharedState&                    sharedState,
     tt(sharedState.tt),
     network(sharedState.network),
     refreshTable(network[token]) {
+
+    // Main search workers get an opponent model, built on this thread so that
+    // its memory is on the same NUMA node. Its SharedState leaves the
+    // opponent-model fields null, so its worker gets no opponent model.
+    if (sharedState.opponentTT)
+    {
+        SharedState opponentState(options, threads, *sharedState.opponentTT,
+                                  *sharedState.opponentSharedHistories, network);
+        opponentModel = std::make_unique<OpponentModel>(opponentState, threadId, numaThreadId,
+                                                        numaTotalThreads, token);
+    }
+
     clear();
 }
+
+Search::Worker::~Worker() = default;
 
 void Search::Worker::ensure_network_replicated() {
     // Access once to force lazy initialization, avoiding initialization during search
@@ -202,6 +217,8 @@ void Search::Worker::start_searching() {
     main_manager()->tm.init(limits, rootPos.side_to_move(), rootPos.game_ply(), options,
                             main_manager()->originalTimeAdjust);
     tt.new_search();
+    if (opponentModel)
+        opponentModel->new_search();
     main_manager()->updates.onStart();
 
     if (rootMoves.empty())
@@ -713,6 +730,9 @@ void Search::Worker::clear() {
         reductions[i] = int(2872 / 128.0 * std::log(i));
 
     refreshTable.clear(network[numaAccessToken]);
+
+    if (opponentModel)
+        opponentModel->clear();
 }
 
 

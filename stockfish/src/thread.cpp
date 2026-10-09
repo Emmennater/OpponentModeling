@@ -206,12 +206,17 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
         }
 
         sharedState.sharedHistories.clear();
+        if (sharedState.opponentSharedHistories)
+            sharedState.opponentSharedHistories->clear();
         for (auto pair : counts)
         {
             NumaIndex numaIndex = pair.first;
             u64       count     = pair.second;
             auto      f         = [&]() {
                 sharedState.sharedHistories.try_emplace(numaIndex, next_power_of_two(count));
+                if (sharedState.opponentSharedHistories)
+                    sharedState.opponentSharedHistories->try_emplace(numaIndex,
+                                                                     next_power_of_two(count));
             };
             if (doBindThreads)
                 numaConfig.execute_on_numa_node(numaIndex, f);
@@ -345,6 +350,11 @@ void ThreadPool::start_thinking(const OptionsMap&  options,
             th->worker->rootPos.set(pos.fen(), pos.is_chess960(), &th->worker->rootState);
             th->worker->rootState = setupStates->back();
             th->worker->tbConfig  = tbConfig;
+
+            // Read once per search, since looking up options by name is too slow per node
+            th->worker->opponentDepth     = int(options["Opponent Depth"]);
+            th->worker->opponentThreshold = int(options["Centipawn Threshold"]);
+            th->worker->opponentColor     = ~pos.side_to_move();
         });
     }
 

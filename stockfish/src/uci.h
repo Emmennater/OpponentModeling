@@ -44,6 +44,7 @@ class UCIEngine {
     void loop();
 
     static int         to_cp(Value v, const Position& pos);
+    static Value       from_cp(int cp, const Position& pos);
     static std::string format_score(const Score& s);
     static std::string square(Square s);
     static std::string move(Move m, bool chess960 = false);

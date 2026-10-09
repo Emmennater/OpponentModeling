@@ -81,7 +81,7 @@ SRCS = attacks.cpp benchmark.cpp bitboard.cpp evaluate.cpp main.cpp \
 	search.cpp thread.cpp timeman.cpp tt.cpp uci.cpp ucioption.cpp tune.cpp syzygy/tbprobe.cpp \
 	nnue/nnue_accumulator.cpp nnue/nnue_misc.cpp nnue/network.cpp \
 	nnue/features/half_ka_v2_hm.cpp nnue/features/full_threats.cpp nnue/features/pp_3wide.cpp \
-	engine.cpp score.cpp memory.cpp
+	engine.cpp score.cpp memory.cpp opponent_model.cpp
 
 OTHER_SRCS = universal/entry_x86.cpp universal/entry_arm64.cpp universal/entry_riscv64.cpp universal/nnue_embed.cpp
 
@@ -91,7 +91,7 @@ HEADERS = attacks.h benchmark.h bitboard.h evaluate.h misc.h movegen.h movepick.
 		nnue/layers/clipped_relu.h nnue/layers/sqr_clipped_relu.h nnue/nnue_accumulator.h \
 		nnue/nnue_architecture.h nnue/nnue_common.h nnue/nnue_feature_transformer.h nnue/simd.h \
 		nnue/nnz_helper.h position.h search.h syzygy/tbprobe.h thread.h thread_native.h timeman.h \
-		tt.h tune.h types.h uci.h ucioption.h perft.h nnue/network.h engine.h score.h numa.h memory.h shm.h shm_unix.h
+		tt.h tune.h types.h uci.h ucioption.h perft.h nnue/network.h engine.h score.h numa.h memory.h shm.h shm_unix.h opponent_model.h
 
 OBJS = $(notdir $(SRCS:.cpp=.o))
 

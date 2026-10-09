@@ -106,6 +106,17 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("Skill Level", Option(20, 0, 20));
 
+    // Opponent modeling: an Opponent Depth of 0 disables it
+    options.add("Opponent Depth", Option(2, 0, 20));
+
+    options.add("Centipawn Threshold", Option(200, 0, 2000));
+
+    options.add(  //
+      "Opponent Hash", Option(16, 1, MaxHashMB, [this](const Option& o) {
+          set_opponent_tt_size(o);
+          return std::nullopt;
+      }));
+
     options.add("Move Overhead", Option(10, 0, 5000));
 
     options.add("nodestime", Option(0, 0, 10000));
@@ -162,6 +173,7 @@ void Engine::search_clear() {
     wait_for_search_finished();
 
     tt.clear(threads);
+    opponentTT.clear(threads);
     threads.clear();
 
     // TODO: does not work with multiple instances
@@ -246,17 +258,24 @@ bool Engine::set_numa_config_from_option(const std::string& o) {
 
 void Engine::resize_threads() {
     threads.wait_for_search_finished();
-    threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, network},
+    threads.set(numaContext.get_numa_config(),
+                {options, threads, tt, sharedHists, network, &opponentTT, &opponentSharedHists},
                 updateContext);
 
     // Reallocate the hash with the new threadpool size
     set_tt_size(options["Hash"]);
+    set_opponent_tt_size(options["Opponent Hash"]);
     threads.ensure_network_replicated();
 }
 
 void Engine::set_tt_size(usize mb) {
     wait_for_search_finished();
     tt.resize(mb, threads);
+}
+
+void Engine::set_opponent_tt_size(usize mb) {
+    wait_for_search_finished();
+    opponentTT.resize(mb, threads);
 }
 
 void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }

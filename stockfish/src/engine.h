@@ -82,6 +82,7 @@ class Engine {
     bool set_numa_config_from_option(const std::string& o);
     void resize_threads();
     void set_tt_size(usize mb);
+    void set_opponent_tt_size(usize mb);
     void set_ponderhit(bool);
     void search_clear();
 
@@ -134,6 +135,10 @@ class Engine {
     Search::SearchManager::UpdateContext  updateContext;
     std::function<void(std::string_view)> onVerifyNetwork;
     std::map<NumaIndex, SharedHistories>  sharedHists;
+
+    // Used only by the opponent model's low-depth searches
+    TranspositionTable                   opponentTT;
+    std::map<NumaIndex, SharedHistories> opponentSharedHists;
 };
 
 }  // namespace Stockfish

@@ -53,6 +53,7 @@ enum NodeType {
 class TranspositionTable;
 class ThreadPool;
 class OptionsMap;
+class OpponentModel;
 
 namespace Eval::NNUE {
 class Network;
@@ -191,23 +192,31 @@ struct LimitsType {
 
 // The UCI stores the uci options, thread pool, and transposition table.
 // This struct is used to easily forward data to the Search::Worker class.
+// The opponent-model hash table and histories are only given to main search
+// workers; the opponent-model workers themselves leave them null.
 struct SharedState {
     SharedState(const OptionsMap&                                        optionsMap,
                 ThreadPool&                                              threadPool,
                 TranspositionTable&                                      transpositionTable,
                 std::map<NumaIndex, SharedHistories>&                    sharedHists,
-                const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net) :
+                const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net,
+                TranspositionTable*                   opponentTranspositionTable = nullptr,
+                std::map<NumaIndex, SharedHistories>* opponentSharedHists        = nullptr) :
         options(optionsMap),
         threads(threadPool),
         tt(transpositionTable),
         sharedHistories(sharedHists),
-        network(net) {}
+        network(net),
+        opponentTT(opponentTranspositionTable),
+        opponentSharedHistories(opponentSharedHists) {}
 
     const OptionsMap&                                        options;
     ThreadPool&                                              threads;
     TranspositionTable&                                      tt;
     std::map<NumaIndex, SharedHistories>&                    sharedHistories;
     const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
+    TranspositionTable*                                      opponentTT;
+    std::map<NumaIndex, SharedHistories>*                    opponentSharedHistories;
 };
 
 class Worker;
@@ -332,6 +341,9 @@ class Worker {
            usize,
            NumaReplicatedAccessToken);
 
+    // Defined in search.cpp, where OpponentModel is a complete type
+    ~Worker();
+
     // Called at instantiation to initialize reductions tables.
     // Reset histories, usually before a new game.
     void clear();
@@ -422,7 +434,16 @@ class Worker {
     Eval::NNUE::AccumulatorStack  accumulatorStack;
     Eval::NNUE::AccumulatorCaches refreshTable;
 
+    // Opponent modeling. Only main search workers have an opponent model;
+    // the opponent-model workers themselves have none, so they never filter.
+    // The parameters are copied from the UCI options at the start of each search.
+    std::unique_ptr<OpponentModel> opponentModel;
+    int                            opponentDepth     = 0;
+    int                            opponentThreshold = 0;  // In centipawns
+    Color                          opponentColor     = COLOR_NB;
+
     friend class Stockfish::ThreadPool;
+    friend class Stockfish::OpponentModel;
     friend class SearchManager;
 };
 
