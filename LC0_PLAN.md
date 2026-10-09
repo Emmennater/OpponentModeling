@@ -90,6 +90,7 @@ Implemented as planned, in [search.h](lc0-src/src/search/classic/search.h), [sea
 - **Export.** [tools/export_maia3.py](tools/export_maia3.py) exports a checkpoint to ONNX, in fp32 or fp16, and checks it against the original PyTorch model. Its forward pass is Maia-3's own, except that the 256 promotion logits are computed in one operation instead of a Python loop of 256 small ones. The result matches the original to within 3e-5 in the logits.
 - **Encoding in C++.** Lc0's board is already in the frame Maia-3 expects (the side to move's, ranks flipped for Black), so each position's 12 piece planes are read straight from its bitboards, for the last 8 positions, oldest first, padded at the front with the oldest. Moves map to Maia-3's vocabulary as `from × 64 + to`, castling as the king's two-square move, and promotions at `4096 + (from file × 8 + to file) × 4 + piece`. This replaces the Python encoding, which managed about 2,000 positions a second.
 - **Running.** ONNX Runtime's CUDA provider runs the network. Maia-3 is many small GPU operations, so a run cost about 12 ms whatever the batch size, which held the search to about 10,000 nodes per second. Now each of the batch sizes 16, 32, 64, 128 and 256 gets its own session with fixed shapes and GPU buffers, and ONNX Runtime records each run once as a CUDA graph and replays it. A batch runs at the smallest size that holds it. The graphs are recorded when the model loads, because recording blocks CUDA calls from other threads, such as the main network's.
+- **One CUDA stream.** The copies of a batch to and from the GPU, and the run, all go on one CUDA stream of our own, passed to ONNX Runtime as its `user_compute_stream`. A first version copied with plain `cudaMemcpy` while ONNX Runtime ran on a stream of its own. CUDA does not order those against each other, so a run could read a batch before it had fully arrived, or its results could be read before they were written. In a 1,000,000-node search, about half of all batches came out different from a rerun after a full synchronization, with logits off by up to 13. Nodes then got another position's probabilities, and the engine expected moves like `7...Be7??`, hanging a bishop, after `1.e4 e5 2.d4 exd4 3.Qxd4 Nc6 4.Qe3 d6 5.Nc3 Nf6 6.Bd2 Bg4 7.f3`. With one stream, no batch differed in 4,000, and the search runs faster. Short tests had matched the reference by luck: they hit good batches.
 - **Probabilities and value.** The policy is a softmax over the legal moves' logits, at `OpponentModelTemperature`. The value (loss, draw, win) is filled in but not used.
 
  In the Belgrade Gambit line, after `8.Nxe4`, Black's replies got 94.2%, 4.6% and 0.3% of the visits, against Maia-1300 probabilities of 94.17%, 4.59% and 0.29%.
@@ -102,26 +103,26 @@ Implemented as planned, in [search.h](lc0-src/src/search/classic/search.h), [sea
   |---|---|
   | None | 156,000 |
   | Maia-1 (1300) | 69,000 |
-  | Maia3-5M, fp16 | 38,000 |
-  | Maia3-23M, fp16 | 24,000 |
-  | Maia3-23M, fp32 | about 18,000 |
-  | Maia3-79M, fp16 | 10,000 |
+  | Maia3-5M, fp16 | 55,000 |
+  | Maia3-23M, fp16 | 35,000 |
+  | Maia3-23M, fp32 | 21,000 |
+  | Maia3-79M, fp16 | 15,000 |
 
-  Before CUDA graphs and the vectorized promotions, Maia3-23M fp16 ran at about 10,000. The networks are now limited by their computation: at batch 256, the 23M network takes about 80 microseconds per position.
+  Before CUDA graphs and the vectorized promotions, Maia3-23M fp16 ran at about 10,000, and 24,000 before the single stream. The networks are now limited by their computation: at batch 256, the 23M network takes about 80 microseconds per position.
 - **Different choices.** With Maia-1300, the engine plays `2.d4` after `1.e4 c5` (plain Lc0: `2.Nf3`), and `Qc3` instead of `Bxd6` in the `Bf4` line from the Stockfish testing.
 - **Scores are expected values,** so they are far from plain Lc0's: for example +1.92 from the start position against Maia-1300, against +0.28. A strong engine playing a 1300 player is expected to win from most positions. What matters for choosing a move is how the candidates compare.
 
 ### Choosing the move at the root
-**The problem.** With the opponent model, a move's value tends to rise the more it is searched, because a deeper search finds more of the opponent's likely mistakes. Lc0's usual rule (PUCT) gives most visits to the move that currently looks best, and plays the move with most visits. So whichever move takes the lead early gets more visits, looks better for it, and keeps the lead. From the start position, `1.Nf3` took 127,000 of 135,000 visits and rose from +0.10 to +0.63. Its rivals stayed near their first estimates. Given 51,000 nodes each with `searchmoves`, the moves scored:
+**The problem.** With the opponent model, a move's value tends to rise the more it is searched, because a deeper search finds more of the opponent's likely mistakes. Lc0's usual rule (PUCT) gives most visits to the move that currently looks best, and plays the move with most visits. So whichever move takes the lead early gets more visits, looks better for it, and keeps the lead. From the start position, `1.Nf3` took 127,000 of 135,000 visits and rose from 0.10 to 0.63. Its rivals stayed near their first estimates. Given 51,000 nodes each with `searchmoves`, the moves' values were:
 
-| Move | Score |
+| Move | Value (Q) |
 |---|---|
-| `1.e4` | +2.47 |
-| `1.Nf3` | +1.76 |
-| `1.d4` | +1.70 |
-| `1.c4` | +1.69 |
+| `1.e4` | 0.509 |
+| `1.d4` | 0.461 |
+| `1.Nf3` | 0.449 |
+| `1.c4` | 0.409 |
 
-Raising the root's exploration (`RootHasOwnCpuctParams`, `CPuctAtRoot` 5 or 8) only changed which move won the race: one move still took 93% of the visits.
+These were measured again after the stream fix (see "One CUDA stream"), and `1.e4` still came out best. The other numbers in this paragraph come from before it. Raising the root's exploration (`RootHasOwnCpuctParams`, `CPuctAtRoot` 5 or 8) only changed which move won the race: one move still took 93% of the visits.
 
 **Sequential halving.** With the opponent model on, the root uses sequential halving, as in Gumbel MuZero, instead:
 - **Rounds.** The `OpponentRootCandidates` moves with the highest priors (8 by default) get equal visits. When all of them reach the round's target, they are ranked by value, the worse half is dropped, and the rest go on to the next round.
@@ -132,8 +133,9 @@ Raising the root's exploration (`RootHasOwnCpuctParams`, `CPuctAtRoot` 5 or 8) o
 The state lives in `Search::RootHalving` and is updated whenever the root is picked from, with `nodes_mutex_` held exclusively. The visits go to the candidate with the fewest visits started, up to the next fewest.
 
 **Results**, 300,000 nodes:
-- **From the start position,** the candidates finish within about 0.06 of each other: `1.e4` with 4 or 16 candidates, `1.d4` with 8. Against a 1300 player the first move matters little.
-- **In the test game,** the engine finds the same moves as with PUCT: `6.e4` after `5...b6`, and `8.Bxa6` after `7...a6`. `Bxa6` wins the equal-visit comparison clearly, 0.961 against 0.912 for `Nc3`, at about 68,000 visits each.
+- **From the start position,** `1.e4` beats `1.Nc3` in the last round, 0.529 against 0.504, at about 68,000 visits each. `1.d4` and `1.Nf3` drop out in the round before, at 0.466 and 0.454.
+- **In the test game,** the engine finds the same moves as with PUCT: `6.e4` after `5...b6` (0.921 against 0.908 for `Nc3`), and `8.Bxa6` after `7...a6` (0.953 against 0.904 for `Nc3`).
+- **After `6...Bg4`** in the line where the engine had expected `7.f3 Be7??`, it plays `7.h3` and expects `7...Bh5`. `7.f3` drops out in the second round.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

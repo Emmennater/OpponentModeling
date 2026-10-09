@@ -160,13 +160,19 @@ void CheckCuda(cudaError_t status) {
 // size. So each batch size gets its own session with fixed shapes, which lets
 // ONNX Runtime record the run once as a CUDA graph and replay it, and fixed
 // GPU buffers for the inputs and outputs, which CUDA graphs need.
+//
+// The copies in and out and the run all go on one CUDA stream of our own, so
+// CUDA runs them in order. ONNX Runtime otherwise runs on a stream of its own
+// that does not wait for plain cudaMemcpy calls, and a run could read a batch
+// before it had finished arriving, or its results be read before they were
+// written: about half of all batches came out wrong under a busy search.
 class Maia3Runner {
  public:
   Maia3Runner(const Maia3Options& options, int batch_size)
       : batch_size_(batch_size),
+        stream_(CreateStream(options.gpu)),
         session_(OrtEnvironment(), ModelPath(options.model_path).c_str(),
-                 SessionOptions(options.gpu, batch_size)) {
-    CheckCuda(cudaSetDevice(options.gpu));
+                 SessionOptions(options.gpu, batch_size, stream_)) {
     CheckCuda(cudaMalloc(&tokens_, Bytes(64 * kWidth)));
     CheckCuda(cudaMalloc(&self_elo_, Bytes(1)));
     CheckCuda(cudaMalloc(&oppo_elo_, Bytes(1)));
@@ -214,6 +220,7 @@ class Maia3Runner {
   }
 
   ~Maia3Runner() {
+    cudaStreamDestroy(stream_);
     cudaFree(tokens_);
     cudaFree(self_elo_);
     cudaFree(oppo_elo_);
@@ -227,13 +234,15 @@ class Maia3Runner {
   // inputs for each, and policy and wdl receive kVocab and 3 logits for each.
   // The rest of the batch reruns whatever positions were last there.
   void Run(const float* tokens, int count, float* policy, float* wdl) {
-    CheckCuda(cudaMemcpy(tokens_, tokens, count * 64 * kWidth * sizeof(float),
-                         cudaMemcpyHostToDevice));
+    CheckCuda(cudaMemcpyAsync(tokens_, tokens,
+                              count * 64 * kWidth * sizeof(float),
+                              cudaMemcpyHostToDevice, stream_));
     session_.Run(Ort::RunOptions{nullptr}, binding_);
-    CheckCuda(cudaMemcpy(policy, policy_, count * kVocab * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    CheckCuda(cudaMemcpy(wdl, wdl_, count * 3 * sizeof(float),
-                         cudaMemcpyDeviceToHost));
+    CheckCuda(cudaMemcpyAsync(policy, policy_, count * kVocab * sizeof(float),
+                              cudaMemcpyDeviceToHost, stream_));
+    CheckCuda(cudaMemcpyAsync(wdl, wdl_, count * 3 * sizeof(float),
+                              cudaMemcpyDeviceToHost, stream_));
+    CheckCuda(cudaStreamSynchronize(stream_));
   }
 
  private:
@@ -248,7 +257,15 @@ class Maia3Runner {
     return std::filesystem::path(path);
   }
 
-  static Ort::SessionOptions SessionOptions(int gpu, int batch_size) {
+  static cudaStream_t CreateStream(int gpu) {
+    CheckCuda(cudaSetDevice(gpu));
+    cudaStream_t stream;
+    CheckCuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    return stream;
+  }
+
+  static Ort::SessionOptions SessionOptions(int gpu, int batch_size,
+                                            cudaStream_t stream) {
     Ort::SessionOptions options;
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
     // A fixed batch size lets the shape computations be folded away, which
@@ -257,11 +274,13 @@ class Maia3Runner {
     Ort::CUDAProviderOptions cuda_options;
     cuda_options.Update({{"device_id", std::to_string(gpu)},
                          {"enable_cuda_graph", "1"}});
+    cuda_options.UpdateWithValue("user_compute_stream", stream);
     options.AppendExecutionProvider_CUDA_V2(*cuda_options);
     return options;
   }
 
   const int batch_size_;
+  const cudaStream_t stream_;
   Ort::Session session_;
   Ort::IoBinding binding_{session_};
   std::vector<Ort::Value> values_;

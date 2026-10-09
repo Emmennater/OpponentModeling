@@ -22,7 +22,7 @@ It needs two networks: a main network for its own play, and a Maia network for t
 - **OpponentRootCandidates** (default 8): the number of root moves the engine compares at equal visits, by sequential halving, before choosing its move. With the opponent model, a move's score rises the more it is searched, so the usual rule would favor whichever move took the lead first (see [LC0_PLAN.md](LC0_PLAN.md)). 0 or 1 turns this off.
 - **OpponentModelTemperature** (default 1.0): above 1 makes the opponent less predictable, below 1 more. Maia-3 at 1.0 matches how often real players blunder (see [MEASUREMENTS.md](MEASUREMENTS.md)).
 
-The fp16 23M Maia-3 network is the best balance of accuracy and speed: about 24,000 nodes per second, against 69,000 with Maia-1. The first `go` after setting the network takes a few seconds longer, while it loads.
+The fp16 23M Maia-3 network is the best balance of accuracy and speed: about 35,000 nodes per second, against 69,000 with Maia-1. The first `go` after setting the network takes a few seconds longer, while it loads.
 
 The scores it reports are expected results against the modeled opponent, so they are much higher than plain Lc0's: a strong engine is expected to beat a 1300 player from most positions.
 
