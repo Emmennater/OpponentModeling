@@ -132,7 +132,7 @@ Two caveats. Maia was trained on Lichess games, and some of the games in this fi
 ## Opponent Modeling in Lc0
 The Stockfish version models the opponent as playing the best move, for it, from a restricted set. A second version, built on [Lc0](https://lczero.org), models the opponent as playing like a [Maia](https://github.com/CSSLab/maia-chess) network instead: at the opponent's moves, the search shares out its visits in proportion to Maia's move probabilities, so each position's value becomes the expected result against that opponent. The design and results are in [LC0_PLAN.md](LC0_PLAN.md).
 
-Its source is Lc0 v0.32.1, in [lc0-src/](lc0-src/). To build it on Windows, install the CUDA toolkit, Visual Studio 2022 or its Build Tools with the C++ workload, and `meson` and `ninja` (`python -m pip install --user meson ninja`), then run [build_lc0.bat](build_lc0.bat). The result is `lc0-srcuild\lc0.exe`.
+Its source is Lc0 v0.32.1, in [lc0-src/](lc0-src/). To build it on Windows, install the CUDA toolkit, Visual Studio 2022 or its Build Tools with the C++ workload, and `meson` and `ninja` (`python -m pip install --user meson ninja`), then run [build_lc0.bat](build_lc0.bat). The result is `lc0-src\build\lc0.exe`.
 
 It needs two networks: a main network for its own play, and a Maia network for the opponent. Two UCI options control the opponent model:
 - **OpponentModelWeights:** the Maia network file, for example `lc0/nets/maia-1300.pb.gz`. Empty turns opponent modeling off.
