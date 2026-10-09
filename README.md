@@ -86,6 +86,30 @@ These compare the time to reach the same depth. With the model enabled, the engi
 
 **Traps.** The engine plays moves that set traps for the modeled opponent, and reports scores for the game against that opponent, not objective ones. The scores are only as good as the opponent model: an opponent who sees more than the model will not fall for these traps. With the first version's unreliable verdicts, the engine often claimed +7 in quiet positions. For example, it played `2.Bb5` after `1.e4 c5`, expecting Black to be forced into `2...Qa5`. With the current version, it plays `2.Nf3` there and reports a normal score.
 
+## Measuring the Model Against Real Games
+[tools/measure_model.py](tools/measure_model.py) replays games from a file of Lichess games and compares the model with the moves actually played. It needs Python with `python-chess`. Each line of the games file holds the white rating, black rating, result and the moves in SAN, separated by tabs. For example:
+
+```
+python tools/measure_model.py lichess_games.tsv --depth 2 --games 300
+```
+
+For each position, it records whether the model kept the move that was played, and whether that move was the model's predicted move (the low-depth search's best). It also records the move's centipawn loss at low depth. From the loss, it reports which share of played moves each threshold would keep.
+
+First results, on 300 games per rating band, for positions from ply 6 to 15. The games file only has the first 16 plies of each game, so these are opening positions. Opponent Depth 2:
+
+| Mover's rating | Kept at 200 cp | Predicted move played | Kept at 20 cp | Kept at 100 cp | Share of legal moves kept |
+|---|---|---|---|---|---|
+| Below 1200 | 84.7% | 27.0% | 41.6% | 71.4% | 51% |
+| 1400–1599 | 94.8% | 34.7% | 56.4% | 87.7% | 57% |
+| 1600–1799 | 96.7% | 35.9% | 59.6% | 91.0% | 60% |
+| 2200 and above | 99.3% | 51.2% | 74.1% | 95.9% | 61% |
+| All | 95.5% | 37.2% | 59.4% | 89.0% | 58% |
+
+- **The 200 cp threshold keeps about 95% of the moves actually played.** It removes about 42% of the legal moves, and those are almost never played. Players below 1200 play a move more than 200 cp worse about 15% of the time.
+- **A threshold of 20 cp would miss about 40% of the moves actually played.** The opponent would often play a move the engine never considered.
+- **Players play the predicted move only about 37% of the time**, from 27% below 1200 to 51% at 2200 and above. Most of the time they play some other reasonable move.
+- **Opponent Depth makes little difference.** Depths 1, 2 and 3 predict the played move about equally well (37.2%, 37.2% and 38.7% overall), so in the opening, depth 1 is as good a model as depth 2, at a fraction of the cost.
+
 ## Model Parameters
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:
 - Opponent Depth (default 2, at most 8): Search depth for our opponent. 0 disables opponent modeling. The low-depth search looks at every move, so its cost grows steeply with depth.
