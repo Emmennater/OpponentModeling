@@ -193,13 +193,19 @@ class Search {
   // worse half by value is dropped, round after round, so moves are compared
   // only at equal visits. A run spreads a budget of visits over its rounds;
   // once one candidate is left, a new run starts with twice the budget, so
-  // the search can go on for any time.
+  // the search can go on for any time. The first run starts with the moves
+  // the main network rates highest; each later run, with those that survived
+  // the previous run's first round.
+  static constexpr size_t kMinRunCandidates = 4;
   struct RootHalving {
     bool initialized = false;
-    // Root edge indices of the candidates, highest prior first, and those
-    // left in the current round.
+    // Root edge indices of the candidates the current run started with, and
+    // of those left in the current round.
     std::vector<int> initial;
     std::vector<int> candidates;
+    // The candidates the next run starts with: those that survived this run's
+    // first round, but at least kMinRunCandidates of them.
+    std::vector<int> next_initial;
     int rounds = 0;      // Rounds in a run.
     int64_t budget = 0;  // Visits a run spreads over its rounds.
     int64_t target = 0;  // Visits each candidate needs to end the round.

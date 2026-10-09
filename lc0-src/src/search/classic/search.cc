@@ -883,6 +883,9 @@ std::optional<Move> Search::RootHalvingBest() const {
 void Search::StartRootHalvingRun() {
   auto& halving = root_halving_;
   halving.candidates = halving.initial;
+  halving.next_initial.clear();
+  halving.rounds = static_cast<int>(
+      std::ceil(std::log2(static_cast<double>(halving.initial.size()))));
   halving.target = std::max<int64_t>(
       1, halving.budget / (halving.rounds * halving.initial.size()));
 }
@@ -917,12 +920,12 @@ void Search::UpdateRootHalving() {
       halving.initial.clear();
       return;
     }
-    halving.rounds = static_cast<int>(
-        std::ceil(std::log2(static_cast<double>(halving.initial.size()))));
     // The first run's first round gives each candidate 16 visits, or more if
     // the root already has visits from an earlier search.
+    const int64_t rounds = static_cast<int64_t>(
+        std::ceil(std::log2(static_cast<double>(halving.initial.size()))));
     halving.budget = std::max<int64_t>(
-        16 * halving.rounds * static_cast<int64_t>(halving.initial.size()),
+        16 * rounds * static_cast<int64_t>(halving.initial.size()),
         root_node_->GetN());
     StartRootHalvingRun();
   }
@@ -942,8 +945,22 @@ void Search::UpdateRootHalving() {
                               edges[b].GetQ(0.0f, draw_score);
                      });
     halving.leader = edges[halving.candidates.front()].GetMove();
+    // A run's first round drops the candidates that fall well short. The next
+    // run leaves them out, instead of bringing them up to its own first
+    // round's target, which spent most of a long search on them: after 2M
+    // nodes in one position, four moves scoring 0.28 down to -0.32 had 131k
+    // visits each. It keeps at least kMinRunCandidates, so that a sharp move,
+    // whose value rises faster with search, can still overtake later.
+    if (halving.candidates.size() == halving.initial.size()) {
+      halving.next_initial.assign(
+          halving.candidates.begin(),
+          halving.candidates.begin() +
+              std::max((halving.candidates.size() + 1) / 2,
+                       std::min(kMinRunCandidates, halving.candidates.size())));
+    }
     halving.candidates.resize((halving.candidates.size() + 1) / 2);
     if (halving.candidates.size() == 1) {
+      halving.initial = halving.next_initial;
       halving.budget *= 2;
       StartRootHalvingRun();
     } else {

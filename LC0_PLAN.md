@@ -128,7 +128,7 @@ These were measured again after the stream fix (see "One CUDA stream"), and `1.e
 
 **Sequential halving.** With the opponent model on, the root uses sequential halving, as in Gumbel MuZero, instead:
 - **Rounds.** The `OpponentRootCandidates` moves with the highest priors (8 by default) get equal visits. When all of them reach the round's target, they are ranked by value, the worse half is dropped, and the rest go on to the next round.
-- **Runs.** A run spreads a budget of visits evenly over its rounds, `ceil(log2(candidates))` of them. When one move is left, a new run starts with twice the budget, so the search can go on for any time. The new run's targets are absolute visit counts, so moves already above them take no visits until the others catch up.
+- **Runs.** A run spreads a budget of visits evenly over its rounds, `ceil(log2(candidates))` of them. When one move is left, a new run starts with twice the budget, so the search can go on for any time. The new run's targets are absolute visit counts, so moves already above them take no visits until the others catch up. The first run starts with the `OpponentRootCandidates` moves. Each later run starts only with the moves that survived the previous run's first round, but never fewer than 4, so that a sharp move whose value rises slowly with search can still overtake. Starting every run with all 8 had spent half of a long search on hopeless moves. After 2M nodes in the Belgrade Gambit position below, `5.Bd3`, `5.Bf4`, `5.Bd2` and `5.Be3`, scoring 0.28 down to −0.32, had 131k visits each.
 - **The best move** is the best-valued candidate of the current round, since the candidates take visits in turn and stay within a few visits of each other. When their visits differ by more than 5%, the move ranked best at the last halving is played instead. That happens just after a new run starts, while the dropped moves catch up, or when the candidates bring visits from the previous move's search. Either way, moves are only compared at equal visits. The reported score and principal variation follow the best move, unless a proven win or loss decides.
 
 - **No tree reuse.** Lc0 normally keeps the part of the previous search's tree that is still relevant. Those visits are uneven: they are concentrated on the moves the previous search expected. A round's targets are absolute visit counts, so a candidate that brings 200,000 visits has already passed the early rounds' targets while its rivals are compared with it at far fewer. Since values rise with visits, it wins those comparisons unfairly. In 30 seconds of infinite analysis after `1.e4 e5 2.Nf3 Nc6`, following 30 seconds after `1.e4 e5` as a GUI would, the reused tree ended with `3.Bc4` and `3.d4` (0.734 and 0.733). `3.Nc3` had been dropped a round earlier at 0.682, with half their visits. A fresh tree ended with `3.Nc3` ahead of `3.d4`, 0.734 against 0.718. So with the opponent model on, every search now starts with a fresh tree, unless `OpponentTreeReuse` is set. The same sequence then also ends with `3.Nc3`.
@@ -144,6 +144,19 @@ The state lives in `Search::RootHalving` and is updated whenever the root is pic
 - **From the start position,** `1.e4` beats `1.Nc3` in the last round, 0.529 against 0.504, at about 68,000 visits each. `1.d4` and `1.Nf3` drop out in the round before, at 0.466 and 0.454.
 - **In the test game,** the engine finds the same moves as with PUCT: `6.e4` after `5...b6` (0.921 against 0.908 for `Nc3`), and `8.Bxa6` after `7...a6` (0.953 against 0.904 for `Nc3`).
 - **After `6...Bg4`** in the line where the engine had expected `7.f3 Be7??`, it plays `7.h3` and expects `7...Bh5`. `7.f3` drops out in the second round.
+
+**Sharp moves need more search.** Values rise as a line is searched deeper, because the leaves are scored by the main network as if the opponent will play perfectly from there. The opponent's chances to go wrong only count once the search reaches them. Sharp lines rise faster, because more of their value lies in those chances. So the move chosen depends on how long the engine searches.
+
+After `1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.d4 exd4`, given equal visits with `searchmoves`, the Belgrade Gambit `5.Nd5` scores 0.617 against 0.655 for `5.Nxd4` at about 9,000 visits each. They are level at about 130,000 each, and `5.Nd5` leads at 429,000, 0.812 against 0.805. Root searches:
+
+| Nodes | Visits per finalist, before / after the later runs shrank | Choice |
+|---|---|---|
+| 100k | 29k / 37k | `5.Nxd4` |
+| 300k | 66k / 101k | `5.Nxd4`, by 0.001 |
+| 1M | 230k / 295k | `5.Nd5` |
+| 2M | 459k / 599k | `5.Nd5` |
+
+The root cannot compare moves beyond the visits it has. A lasting fix would score the leaves where the opponent is to move with the mistakes still to come, so that sharp positions score higher without deep search.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
