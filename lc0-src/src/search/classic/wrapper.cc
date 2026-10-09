@@ -89,9 +89,12 @@ const OptionId kOpponentTreeReuseId{
      .uci_option = "OpponentTreeReuse",
      .help_text =
          "With an opponent model, whether a search keeps the previous search's "
-         "tree. The root compares its candidate moves at equal visits "
-         "(OpponentRootCandidates), and visits kept from the previous search "
-         "are uneven, which favors the moves it searched most.",
+         "tree and network caches. The root compares its candidate moves at "
+         "equal visits (OpponentRootCandidates), and visits kept from the "
+         "previous search are uneven, which favors the moves it searched most. "
+         "The caches hold evaluations of positions reached by other move "
+         "orders, which differ a little from fresh ones, enough to change "
+         "close decisions.",
      .visibility = OptionId::kAlwaysVisible}};
 
 class ClassicSearch : public SearchBase {
@@ -235,6 +238,19 @@ void ClassicSearch::StartSearch(const GoParams& params) {
       std::make_unique<NonOwningUciRespondForwarder>(uci_responder_);
   if (options_->Get<Button>(kClearTree).TestAndReset()) tree_->TrimTreeAtHead();
   UpdateOpponentModel();
+  // Opponent modeling: unless reuse is asked for, every search also starts
+  // with empty caches, so that it gives the same result as in a new process.
+  // The caches are keyed by the position alone, while the networks also read
+  // the moves before it, so an evaluation the previous search cached for the
+  // same position, reached by another move order, differs a little from a
+  // fresh one. That shifted values by about 0.01, enough to change the move.
+  if (opponent_backend_ && !options_->Get<bool>(kOpponentTreeReuseId)) {
+    for (Backend* backend : {backend_, opponent_backend_.get()}) {
+      if (auto* cache = dynamic_cast<CachingBackend*>(backend)) {
+        cache->ClearCache();
+      }
+    }
+  }
 
   const auto cache_size =
       options_->Get<int>(SharedBackendParams::kNNCacheSizeId);
