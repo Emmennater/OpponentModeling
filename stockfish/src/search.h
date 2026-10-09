@@ -192,31 +192,23 @@ struct LimitsType {
 
 // The UCI stores the uci options, thread pool, and transposition table.
 // This struct is used to easily forward data to the Search::Worker class.
-// The opponent-model hash table and histories are only given to main search
-// workers; the opponent-model workers themselves leave them null.
 struct SharedState {
     SharedState(const OptionsMap&                                        optionsMap,
                 ThreadPool&                                              threadPool,
                 TranspositionTable&                                      transpositionTable,
                 std::map<NumaIndex, SharedHistories>&                    sharedHists,
-                const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net,
-                TranspositionTable*                   opponentTranspositionTable = nullptr,
-                std::map<NumaIndex, SharedHistories>* opponentSharedHists        = nullptr) :
+                const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net) :
         options(optionsMap),
         threads(threadPool),
         tt(transpositionTable),
         sharedHistories(sharedHists),
-        network(net),
-        opponentTT(opponentTranspositionTable),
-        opponentSharedHistories(opponentSharedHists) {}
+        network(net) {}
 
     const OptionsMap&                                        options;
     ThreadPool&                                              threads;
     TranspositionTable&                                      tt;
     std::map<NumaIndex, SharedHistories>&                    sharedHistories;
     const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
-    TranspositionTable*                                      opponentTT;
-    std::map<NumaIndex, SharedHistories>*                    opponentSharedHistories;
 };
 
 class Worker;
@@ -360,6 +352,10 @@ class Worker {
     // and describes the result. Used by the `opponentmoves` command.
     std::string describe_opponent_moves(Position& pos);
 
+    // Resizes the opponent model's filter cache. Called on the worker's own
+    // thread, so the memory is on its NUMA node.
+    void set_opponent_cache_size(usize mb);
+
     // Public because they need to be updatable by the stats
     ButterflyHistory mainHistory;
     LowPlyHistory    lowPlyHistory;
@@ -438,9 +434,8 @@ class Worker {
     Eval::NNUE::AccumulatorStack  accumulatorStack;
     Eval::NNUE::AccumulatorCaches refreshTable;
 
-    // Opponent modeling. Only main search workers have an opponent model;
-    // the opponent-model workers themselves have none, so they never filter.
-    // The parameters are copied from the UCI options at the start of each search.
+    // Opponent modeling. The parameters are copied from the UCI options at the
+    // start of each search.
     std::unique_ptr<OpponentModel> opponentModel;
     int                            opponentDepth     = 0;
     int                            opponentThreshold = 0;  // In centipawns

@@ -19,45 +19,31 @@ For now, quiescence search is left unchanged: the opponent may still play any ca
 ## Design of the Low-Depth Search
 The step-by-step implementation, with references into the Stockfish source, is in [PLAN.md](PLAN.md).
 
-The low-depth search reuses Stockfish's own search function instead of a separate implementation. The two searches must not interfere with each other, so all mutable search state is kept separate.
+### A Search That Depends Only on the Position
+The low-depth search is a small, separate search: a plain alpha-beta search that looks at every move to the opponent depth, followed by a search of captures. It uses Stockfish's move generation and evaluation network, but has no hash table, no history tables and no pruning beyond alpha-beta. It also ignores repetitions and the 50-move rule, which depend on how a position was reached.
 
-### A Second Worker per Thread
-In Stockfish, each search thread runs a `Search::Worker`, which owns the node counter, root moves, search stack, the evaluation network's incremental state and most of the history tables. Two things are shared instead of owned: the hash table, and a set of history tables that all threads on a NUMA node share (continuation, pawn and correction history). Each thread therefore gets a second worker, the opponent-model worker, which runs the unmodified `search()` function against its own state:
+As a result, the verdict on a move depends only on the position. That matters because a verdict is cached and reused for the rest of the search. A first version used Stockfish's own search function instead. At low depth, Stockfish's pruning depends on history tables that change with every search, so the same position could get very different verdicts. In one position, depending on what had been searched before, the opponent was allowed either 34 of its 47 moves or only one. The main search then built a winning line on that single forced move. PLAN.md has the details.
 
-| State | Main search | Opponent-model search |
-|---|---|---|
-| Hash table | The normal one, sized by `Hash` | Its own small table |
-| Per-thread history tables | Main worker's | Its own |
-| Shared history tables | Shared by the main workers | A separate set, shared by the opponent-model workers |
-| Evaluation network state | Main worker's | Its own, rebuilt from the position at the start of each low-depth search |
-| Search stack | Main worker's | Its own |
-| `Position` | Shared | Shared; every move is undone, so the position is returned unchanged |
-| Stop flag | Shared | Shared, so stopping the engine also stops the low-depth search |
-
-The opponent-model worker never runs as the main thread, so it does not manage time. It also has a flag that disables move filtering inside it, so it never calls itself recursively. It is created alongside the main worker, on the same thread, so it uses memory on the same NUMA node.
-
-`search()` reads some values that Stockfish's normal root code sets up, so the low-depth search sets them itself: the root move list, the root depth, the root window size, the optimism values and the sentinel entries at the start of the search stack.
+The search keeps its own copy of the evaluation network's state, and every move it makes on the shared position is undone, so it can't disturb the main search.
 
 ### Filtering the Moves
-The low-depth search uses its own root loop. Stockfish's normal root loop only finds the best move, but we need every move within the threshold of the best. Like Stockfish, the low-depth search deepens one ply at a time, from depth 1 up to the opponent depth, so "Opponent Depth" means what Stockfish's own depth means. Each iteration searches the moves in the order of the previous iteration's scores. Within an iteration, the lower bound of the search window (alpha) is kept just below `best - threshold` and raised as better moves are found:
+A move is allowed if it scores at least the opponent's best score minus the threshold. To avoid deciding moves the main search never reaches, each move is decided only when needed:
 
-1. Take the opponent's legal moves in order. The first iteration uses the order of Stockfish's move picker, with the best move from the opponent-model hash table first.
-2. For each move, run a cheap null-window search to test whether it scores at least `best - threshold`.
-3. If it fails, it is discarded. Its true score is below `best - threshold`, and `best` only rises, so it can never come back.
-4. If it passes, re-search it with an open window to get its exact score.
+1. When the main search reaches an opponent position, the low-depth search finds the opponent's best score exactly. The first move gets an open search window; each later move is tested against the best so far with a cheap null-window search, and searched fully only if it might be better.
+2. When the main search is about to search one of the opponent's moves, a null-window search tests whether that move scores at least `best - threshold`. Moves whose score was already found exactly in step 1, including the best move, need no test.
 
-After the last iteration, the moves with an exact score of at least `best - threshold` are kept. The best move is always kept, so the result is never empty. Searching the best move first makes every later test search cheaper.
+Because the search looks at every move, the answer to each test is exact, whatever order moves are tried in. The best move is always allowed, so the opponent always has at least one move when it has a legal one.
 
 ### Hooking into the Main Search
 Only two changes are made to `search()`:
-- At nodes where the opponent is to move, the allowed moves are computed just before the moves loop, after the `moves_loop` label so that nodes in check are covered too. Nodes that end earlier (hash table hits, razoring, futility pruning, null-move pruning) never pay for a low-depth search.
-- In the moves loop, disallowed moves are skipped before they are counted. Late-move reductions and move-count pruning therefore treat the allowed moves as the whole move list.
+- At nodes where the opponent is to move, the opponent's best score is found just before the moves loop, after the `moves_loop` label so that nodes in check are covered too. Nodes that end earlier (hash table hits, razoring, futility pruning, null-move pruning) never pay for a low-depth search.
+- In the moves loop, each move is tested just after Stockfish's own pruning, so moves Stockfish would prune anyway are never tested. Disallowed moves are skipped and not counted, so late-move reductions and move-count pruning see only the allowed moves and the moves Stockfish pruned.
 
-The result for each position is cached by its hash key. The cache saves time when a position is searched again. It also keeps the main search consistent: without it, a position could get a different list of allowed moves later in the same search, because the opponent-model hash table keeps changing. Results from a search that was stopped part-way are never cached, and the cache is cleared on `ucinewgame` or when an opponent parameter changes.
+Each position's best score and verdicts are kept in a filter cache, so a position that comes up again costs nothing. Since every verdict depends only on the position, the cache only saves time; it can't change a result. The cache is cleared on `ucinewgame` or when an opponent parameter changes.
 
 ### Known Limitations
 - ProbCut tries captures before the moves loop, so it may use a capture the opponent would not play. This errs in the opponent's favor and is left unchanged for now.
-- Every opponent node that reaches the moves loop runs a full low-depth search, even close to the leaves. If this is too slow, filtering could be skipped when the remaining depth is low.
+- The low-depth search looks at every move, so it is slow compared with the rest of the engine, and its cost grows steeply with depth. See "First Results" below.
 
 ## Stockfish Version and Building
 The engine is based on the Stockfish 19 release (tag `sf_19`). Its source is kept in [stockfish/](stockfish/), and our changes are made directly to it.
@@ -75,7 +61,7 @@ This builds `stockfish\src\stockfish.exe` for the current computer's CPU. To bui
 To check the build, run `stockfish.exe bench`. The unmodified source gives `Nodes searched : 2497913`.
 
 ## Checking the Opponent Model
-The non-standard UCI command `opponentmoves` runs the low-depth search for the side to move in the current position, using the current `Opponent Depth` and `Centipawn Threshold`. It prints every legal move with its score, or an upper bound (`<=`) if the move was discarded early, and whether it is kept. For example, in the console:
+The non-standard UCI command `opponentmoves` runs the low-depth search for the side to move in the current position, using the current `Opponent Depth` and `Centipawn Threshold`. It prints every legal move with its exact score and whether it is kept. For example, in the console:
 
 ```
 position fen rnb1kbnr/pppp1ppp/8/4p3/4P2q/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3
@@ -84,24 +70,24 @@ opponentmoves
 
 Here only `f3h4`, winning Black's queen, is kept. Every other move is more than 200 centipawns worse.
 
+The command also runs the faster procedure the main search uses, and prints an error if any of its verdicts differ from the exact scores.
+
 ## First Results
 **Speed.** Time for `bench` (50 positions searched to depth 13, one thread) at different opponent depths:
 
 | Opponent Depth | Time | Compared with Stockfish |
 |---|---|---|
-| 0 (disabled) | 2.8 s | 1× |
-| 1 | 11.3 s | 4.0× |
-| 2 (default) | 6.5 s | 2.3× |
-| 3 | 14.0 s | 4.9× |
-| 4 | 35.1 s | 12× |
-| 6 | 63.9 s | 22× |
+| 0 (disabled) | 2.5 s | 1× |
+| 1 | 11.1 s | 4.5× |
+| 2 (default) | 66.8 s | 27× |
+| 3 | 231 s | 93× |
 
-These compare the time to reach the same depth, but with the model enabled the engine searches a different, restricted tree, so the comparison is only a rough guide. Depth 1 is slower than depth 2. At depth 1 the low-depth search is a single move followed by a search of captures only, so its judgments are noisier.
+These compare the time to reach the same depth. With the model enabled, the engine searches a different, restricted tree, so the comparison is only a rough guide. Almost all of the extra time is spent in the low-depth searches: the main search itself visits fewer nodes than plain Stockfish, because the opponent has fewer moves. A first version that used Stockfish's own search for the opponent was much faster (2.3× at depth 2), but its verdicts were unreliable (see "A Search That Depends Only on the Position").
 
-**Traps.** The engine now plays moves that set traps for the modeled opponent, and reports scores for the game against that opponent, not objective ones. For example, after `1.e4 c5` it plays `2.Bb5` and reports about +7. Black's depth-2 search believes `2...Qa5` wins the bishop, so the model assumes Black will play it. Plain Stockfish rates `2.Bb5` as roughly equal, so the move is objectively fine. The engine simply expects the opponent to go wrong afterwards. The scores are only as good as the opponent model: a stronger opponent will not fall for these traps.
+**Traps.** The engine plays moves that set traps for the modeled opponent, and reports scores for the game against that opponent, not objective ones. The scores are only as good as the opponent model: an opponent who sees more than the model will not fall for these traps. With the first version's unreliable verdicts, the engine often claimed +7 in quiet positions. For example, it played `2.Bb5` after `1.e4 c5`, expecting Black to be forced into `2...Qa5`. With the current version, it plays `2.Nf3` there and reports a normal score.
 
 ## Model Parameters
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:
-- Opponent Depth (default 2): Search depth for our opponent. 0 disables opponent modeling. The default is kept low for initial testing, because the engine is expected to run much slower than normal Stockfish.
+- Opponent Depth (default 2, at most 8): Search depth for our opponent. 0 disables opponent modeling. The low-depth search looks at every move, so its cost grows steeply with depth.
 - Centipawn Threshold (default 200): The centipawn threshold used for discarding opponent moves.
-- Opponent Hash (default 16): Size in MB of the hash table used by the opponent's low-depth search.
+- Opponent Hash (default 16): Size in MB of each thread's filter cache, which remembers the opponent's best score and the verdicts on its moves for each position.

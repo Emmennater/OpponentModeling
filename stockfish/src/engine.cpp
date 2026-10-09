@@ -106,14 +106,16 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("Skill Level", Option(20, 0, 20));
 
-    // Opponent modeling: an Opponent Depth of 0 disables it
-    options.add("Opponent Depth", Option(2, 0, 20));
+    // Opponent modeling: an Opponent Depth of 0 disables it. The low-depth
+    // search is full-width, so its cost grows steeply with depth.
+    options.add("Opponent Depth", Option(2, 0, 8));
 
     options.add("Centipawn Threshold", Option(200, 0, 2000));
 
+    // Size of each thread's opponent-model filter cache
     options.add(  //
       "Opponent Hash", Option(16, 1, MaxHashMB, [this](const Option& o) {
-          set_opponent_tt_size(o);
+          set_opponent_cache_size(o);
           return std::nullopt;
       }));
 
@@ -196,7 +198,6 @@ void Engine::search_clear() {
     wait_for_search_finished();
 
     tt.clear(threads);
-    opponentTT.clear(threads);
     threads.clear();
 
     // The hash table is empty, so the next search need not clear it again
@@ -284,13 +285,11 @@ bool Engine::set_numa_config_from_option(const std::string& o) {
 
 void Engine::resize_threads() {
     threads.wait_for_search_finished();
-    threads.set(numaContext.get_numa_config(),
-                {options, threads, tt, sharedHists, network, &opponentTT, &opponentSharedHists},
+    threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, network},
                 updateContext);
 
     // Reallocate the hash with the new threadpool size
     set_tt_size(options["Hash"]);
-    set_opponent_tt_size(options["Opponent Hash"]);
     threads.ensure_network_replicated();
 }
 
@@ -299,9 +298,18 @@ void Engine::set_tt_size(usize mb) {
     tt.resize(mb, threads);
 }
 
-void Engine::set_opponent_tt_size(usize mb) {
+void Engine::set_opponent_cache_size(usize mb) {
     wait_for_search_finished();
-    opponentTT.resize(mb, threads);
+
+    // Each thread resizes its own cache, so the memory is on its NUMA node
+    for (auto&& th : threads)
+    {
+        Thread* t = th.get();
+        t->run_custom_job([t, mb]() { t->worker->set_opponent_cache_size(mb); });
+    }
+
+    for (auto&& th : threads)
+        th->wait_for_search_finished();
 }
 
 void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }
@@ -384,8 +392,7 @@ std::string Engine::opponent_moves() {
     // checks it. The next 'go' resets it in the same way.
     threads.stop = false;
 
-    // Run on the main search thread, for its large stack and NUMA binding. The
-    // current position is used directly, so its move history is taken into account.
+    // Run on the main search thread, for its large stack and NUMA binding
     std::string result;
     threads.run_on_thread(
       0, [&]() { result = threads.main_thread()->worker->describe_opponent_moves(pos); });

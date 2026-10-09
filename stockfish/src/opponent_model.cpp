@@ -18,307 +18,501 @@
 #include "opponent_model.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <iomanip>
-#include <memory>
 #include <sstream>
 
-#include "history.h"
+#include "evaluate.h"
 #include "movegen.h"
-#include "movepick.h"
 #include "score.h"
-#include "thread.h"
-#include "tt.h"
+#include "search.h"
 #include "uci.h"
 
 namespace Stockfish {
 
-using namespace Search;
+namespace {
 
-OpponentModel::OpponentModel(SharedState&              sharedState,
-                             usize                     threadId,
-                             usize                     numaThreadId,
-                             usize                     numaTotalThreads,
-                             NumaReplicatedAccessToken token) :
-    filterCache(std::make_unique<FilterEntry[]>(FilterCacheSize)) {
+// Move ordering only affects the speed of the low-depth search, never its
+// verdicts: the search is full-width, so it finds the same scores in any
+// order. Captures and promotions come first, most valuable victim first, then
+// least valuable attacker first.
+int order_score(const Position& pos, Move m) {
+    if (!pos.capture_stage(m))
+        return 0;
 
-    assert(sharedState.opponentTT == nullptr && sharedState.opponentSharedHistories == nullptr);
+    int score = 1 << 20;
+    score += 16 * PieceValue[pos.piece_on(m.to_sq())];  // No piece there for en passant
+    if (m.type_of() == PROMOTION)
+        score += 16 * PieceValue[make_piece(WHITE, m.promotion_type())];
 
-    // The thread index only needs to be nonzero: index 0 marks the main thread,
-    // which manages time and expects a SearchManager rather than a NullSearchManager.
-    worker = make_unique_large_page<Worker>(sharedState, std::make_unique<NullSearchManager>(),
-                                            threadId + 1, numaThreadId, numaTotalThreads, token);
+    return score - int(type_of(pos.moved_piece(m)));
+}
 
-    assert(!worker->is_mainthread());
+// Fills `list` with the legal moves of the given type, in search order.
+// Returns the number of moves.
+template<GenType Type>
+int ordered_moves(const Position& pos, ExtMove* list) {
+    int n = 0;
+    for (Move m : MoveList<Type>(pos))
+        if (Type == LEGAL || pos.legal(m))
+        {
+            list[n]       = m;
+            list[n].value = order_score(pos, m);
+            ++n;
+        }
 
-    // search() reads rootMoves[pvIdx].score once rootDepth reaches 16, to decide
-    // whether it is looking for a mate. The low-depth search has no root move
-    // list of its own, so it gets a single placeholder with a neutral score.
-    // It is set up once here, because RootMove allocates memory.
-    worker->rootMoves.emplace_back(Move::none());
-    worker->rootMoves[0].score = VALUE_ZERO;
-    worker->pvIdx              = 0;
-    worker->pvLast             = 1;
+    std::stable_sort(list, list + n,
+                     [](const ExtMove& a, const ExtMove& b) { return a.value > b.value; });
+    return n;
+}
+
+// Index of the legal move `m` in the node's list of legal moves
+usize index_of(const OpponentNode& node, Move m) {
+    const Move* it = std::find(node.legalMoves, node.legalMoves + node.legalCount, m);
+    assert(it != node.legalMoves + node.legalCount);
+    return usize(it - node.legalMoves);
+}
+
+}  // namespace
+
+OpponentModel::OpponentModel(const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net,
+                             NumaReplicatedAccessToken                                token,
+                             const std::atomic_bool&                                  stopFlag,
+                             usize                                                    cacheSizeMb) :
+    network(net),
+    numaAccessToken(token),
+    stop(stopFlag),
+    accumulatorStack(make_unique_large_page<Eval::NNUE::AccumulatorStack>()),
+    refreshTable(make_unique_large_page<Eval::NNUE::AccumulatorCaches>(network[token])) {
+
+    resize_cache(cacheSizeMb);
 }
 
 void OpponentModel::clear() {
-    worker->clear();
-    std::memset(static_cast<void*>(filterCache.get()), 0, FilterCacheSize * sizeof(FilterEntry));
+    refreshTable->clear(network[numaAccessToken]);
+    std::memset(static_cast<void*>(filterCache.get()), 0, filterCacheSize * sizeof(FilterEntry));
 }
 
-void OpponentModel::new_search() { worker->tt.new_search(); }
+void OpponentModel::resize_cache(usize cacheSizeMb) {
+    const usize entries = std::max<usize>(1, cacheSizeMb * 1024 * 1024 / sizeof(FilterEntry));
+
+    // A power of two, so an entry can be found by masking the key
+    filterCacheSize = 1;
+    while (filterCacheSize * 2 <= entries)
+        filterCacheSize *= 2;
+
+    filterCache = std::make_unique<FilterEntry[]>(filterCacheSize);  // Zero-initialized
+}
 
 void OpponentModel::start_search(int depth, int thresholdCp) {
     if (depth != cacheDepth || thresholdCp != cacheThresholdCp)
     {
         std::memset(static_cast<void*>(filterCache.get()), 0,
-                    FilterCacheSize * sizeof(FilterEntry));
+                    filterCacheSize * sizeof(FilterEntry));
         cacheDepth       = depth;
         cacheThresholdCp = thresholdCp;
     }
-
-    Worker& w = *worker;
-
-    // Reset the node count at every search, as ThreadPool::start_thinking()
-    // does for the main workers. search() uses it to vary draw scores
-    // (value_draw()), so a count carried over from earlier searches would make
-    // the results depend on them.
-    w.nodes = 0;
-
-    // Age the move-ordering histories once per main search, as
-    // iterative_deepening() does for the main workers at the start of every search
-
-    w.lowPlyHistory.fill(102);
-
-    for (Color c : {WHITE, BLACK})
-        for (int i = 0; i < UINT_16_HISTORY_SIZE; i++)
-            w.mainHistory[c][i] = w.mainHistory[c][i] * 729 / 1024;
 }
 
-// Runs the low-depth search for the side to move in `pos`, which is the
-// opponent. Like the main search, it deepens one ply at a time up to `depth`,
-// and each iteration searches the moves in the order of the previous
-// iteration's scores. Every legal move gets a result from the last iteration
-// in `results`: an exact score if it was within `threshold` of the best move
-// at the time it was searched, otherwise an upper bound. The best score is
-// returned in `bestValue`. Returns false if the search was stopped, in which
-// case the results must not be used.
-bool OpponentModel::search(Position&                 pos,
-                           Depth                     depth,
-                           Value                     threshold,
-                           const Tablebases::Config& tbConfig,
-                           RootResults&              results,
-                           Value&                    bestValue) {
+// The verdict depends on the exact 50-move counter, because the evaluation
+// is scaled down as it grows. pos.key() only includes it in steps of 8 plies.
+Key OpponentModel::cache_key(const Position& pos) {
+    return pos.key() ^ (Key(pos.rule50_count()) + 1) * 0x9E3779B97F4A7C15ULL;
+}
 
-    assert(depth > 0 && depth < MAX_PLY);
-    assert(threshold >= 0);
+Value OpponentModel::evaluate(const Position& pos) {
+    return Eval::evaluate(network[numaAccessToken], pos, *accumulatorStack, *refreshTable, 0);
+}
 
-    Worker& w = *worker;
+void OpponentModel::do_move(Position& pos, Move m, StateInfo& st) {
+    auto& dirties = accumulatorStack->push();
+    pos.do_move(m, st, pos.gives_check(m), dirties, nullptr, nullptr);
+    ++nodes;
+}
 
-    // Set the root fields that search() reads. For the main search they are
-    // set by start_searching(), ThreadPool::start_thinking() and
-    // iterative_deepening(). The placeholder root move is set up in the
-    // constructor, and rootDepth is set by each iteration.
-    assert(w.rootMoves.size() == 1 && w.rootMoves[0].score == VALUE_ZERO && w.pvIdx == 0);
+void OpponentModel::undo_move(Position& pos, Move m) {
+    pos.undo_move(m);
+    accumulatorStack->pop();
+}
 
-    w.accumulatorStack.reset();
-    w.nmpMinPly = 0;
-    w.selDepth  = 0;
-    w.optimism[WHITE] = w.optimism[BLACK] = VALUE_ZERO;
-    w.lastIterationIdxPV.clear();
-    w.tbConfig = tbConfig;
+// Full-width, fail-soft alpha-beta search. There is no draw detection except
+// stalemate, so the result depends only on the position, not on how it was
+// reached.
+Value OpponentModel::alpha_beta(Position& pos, Value alpha, Value beta, Depth depth, int ply) {
 
-    // Search stack, set up as in iterative_deepening()
-    Stack  stack[MAX_PLY + 10] = {};
-    Stack* ss                  = stack + 7;
+    assert(-VALUE_INFINITE <= alpha && alpha < beta && beta <= VALUE_INFINITE);
 
-    for (int i = 7; i > 0; --i)
+    if (depth <= 0)
+        return qsearch(pos, alpha, beta, ply);
+
+    if (stopped())
+        return VALUE_ZERO;
+
+    ExtMove   list[MAX_MOVES];
+    const int moveCount = ordered_moves<LEGAL>(pos, list);
+
+    if (moveCount == 0)
+        return pos.checkers() ? mated_in(ply) : VALUE_DRAW;
+
+    StateInfo st;
+    Value     bestValue = -VALUE_INFINITE;
+
+    for (int i = 0; i < moveCount; ++i)
     {
-        (ss - i)->continuationHistory = &w.continuationHistory[0][0][NO_PIECE][0];  // Sentinel
-        (ss - i)->continuationCorrectionHistory = &w.continuationCorrectionHistory[NO_PIECE][0];
-        (ss - i)->staticEval                    = VALUE_NONE;
+        do_move(pos, list[i], st);
+        Value value = -alpha_beta(pos, -beta, -alpha, depth - 1, ply + 1);
+        undo_move(pos, list[i]);
+
+        if (value > bestValue)
+        {
+            bestValue = value;
+            if (value > alpha)
+            {
+                alpha = value;
+                if (value >= beta)
+                    break;
+            }
+        }
     }
 
-    for (int i = 0; i <= MAX_PLY + 2; ++i)
-        (ss + i)->ply = i;
+    return bestValue;
+}
 
-    PVMoves rootPv, childPv;
-    ss->pv = &rootPv;
+// Search of captures, to resolve exchanges before evaluating. Out of check,
+// the side to move may stand pat, and captures that lose material by static
+// exchange evaluation are not tried. In check, every evasion is tried.
+Value OpponentModel::qsearch(Position& pos, Value alpha, Value beta, int ply) {
 
-    // The root entry is read by the children, for example to decide whether
-    // the static evaluation is improving. In check there is no static
-    // evaluation, as in search().
-    ss->inCheck = pos.checkers();
-    ss->ttPv    = true;
+    assert(-VALUE_INFINITE <= alpha && alpha < beta && beta <= VALUE_INFINITE);
 
-    Value unadjustedStaticEval = ss->inCheck ? VALUE_NONE : w.evaluate(pos);
-    ss->staticEval             = unadjustedStaticEval;
+    if (stopped())
+        return VALUE_ZERO;
 
-    auto [ttHit, ttData, ttWriter] = w.tt.probe(pos.key());
+    const bool inCheck = pos.checkers();
 
-    // The first iteration searches the moves in the order the main search would
-    RootResult moves[MAX_MOVES];
-    usize      moveCount = 0;
+    if (ply >= MAX_PLY - 1)
+        return inCheck ? VALUE_DRAW : evaluate(pos);
+
+    ExtMove list[MAX_MOVES];
+    int     moveCount;
+    Value   bestValue = -VALUE_INFINITE;
+
+    if (inCheck)
+        moveCount = ordered_moves<EVASIONS>(pos, list);
+    else
     {
-        const PieceToHistory* contHist[] = {
-          (ss - 1)->continuationHistory, (ss - 2)->continuationHistory,
-          (ss - 3)->continuationHistory, (ss - 4)->continuationHistory,
-          (ss - 5)->continuationHistory, (ss - 6)->continuationHistory};
+        bestValue = evaluate(pos);
+        if (bestValue >= beta)
+            return bestValue;
 
-        MovePicker mp(pos, ttHit ? ttData.move : Move::none(), depth, &w.mainHistory,
-                      &w.lowPlyHistory, &w.captureHistory, contHist, &w.sharedHistory, ss->ply);
-
-        Move move;
-        while ((move = mp.next_move()) != Move::none())
-            if (pos.legal(move))
-                moves[moveCount++] = {move, -VALUE_INFINITE, false};
+        alpha     = std::max(alpha, bestValue);
+        moveCount = ordered_moves<CAPTURES>(pos, list);
     }
-
-    assert(moveCount > 0 && moveCount == MoveList<LEGAL>(pos).size());
 
     StateInfo st;
 
-    for (Depth iterationDepth = 1; iterationDepth <= depth; ++iterationDepth)
+    for (int i = 0; i < moveCount; ++i)
     {
-        w.rootDepth = iterationDepth;
-        bestValue   = -VALUE_INFINITE;
+        if (!inCheck && !pos.see_ge(list[i], 0))
+            continue;
 
-        for (usize i = 0; i < moveCount; ++i)
+        do_move(pos, list[i], st);
+        Value value = -qsearch(pos, -beta, -alpha, ply + 1);
+        undo_move(pos, list[i]);
+
+        if (value > bestValue)
         {
-            RootResult& r = moves[i];
-
-            ss->moveCount = int(i + 1);
-
-            // A move scoring at most alpha is more than `threshold` worse than
-            // the best move so far. Since the best score only rises, it would
-            // also be discarded at the end, so an upper bound is enough.
-            Value alpha = std::max(bestValue - threshold - 1, -VALUE_INFINITE);
-            w.rootDelta = VALUE_INFINITE - alpha;
-
-            w.do_move(pos, r.move, st, ss);
-
-            // Cheap null-window test first, then an exact score for moves that
-            // pass it. Until a first move has been searched there is nothing
-            // to test against.
-            Value value = -VALUE_INFINITE;
-            if (alpha > -VALUE_INFINITE)
-                value =
-                  -w.search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, iterationDepth - 1, true);
-
-            if (alpha == -VALUE_INFINITE || value > alpha)
+            bestValue = value;
+            if (value > alpha)
             {
-                (ss + 1)->pv = &childPv;
-                childPv.clear();
-                value =
-                  -w.search<PV>(pos, ss + 1, -VALUE_INFINITE, -alpha, iterationDepth - 1, false);
+                alpha = value;
+                if (value >= beta)
+                    break;
             }
-
-            w.undo_move(pos, r.move);
-
-            // The values of a stopped search are meaningless
-            if (w.threads.stop.load(std::memory_order_relaxed))
-                return false;
-
-            assert(-VALUE_INFINITE < value && value < VALUE_INFINITE);
-
-            // With an infinite upper bound, a score above alpha is exact. A
-            // score at or below alpha, even after passing the test, is an upper bound.
-            r.value   = value;
-            r.exact   = value > alpha;
-            bestValue = std::max(bestValue, value);
         }
-
-        // Order the moves by this iteration's scores: exact scores first, best
-        // first, then upper bounds, highest first. The best move is exact,
-        // because it scored above the alpha it was searched with.
-        std::stable_sort(moves, moves + moveCount, [](const RootResult& a, const RootResult& b) {
-            return a.exact != b.exact ? a.exact : a.value > b.value;
-        });
-
-        assert(moves[0].exact && moves[0].value == bestValue);
     }
 
-    for (usize i = 0; i < moveCount; ++i)
-        results.push_back(moves[i]);
+    if (inCheck && bestValue == -VALUE_INFINITE)
+        return mated_in(ply);
 
-    // The best score is exact, because every move was searched with an
-    // infinite upper bound. Storing it orders the best move first next time.
-    ttWriter.write(pos.key(), bestValue, true, BOUND_EXACT, depth, moves[0].move,
-                   unadjustedStaticEval, w.tt.generation());
+    return bestValue;
+}
+
+// Fills `moves` with the legal root moves. For a search deeper than one ply,
+// they are ordered by a search of captures after each move, best first, so
+// that the best move is likely searched first. At depth 1 that would be the
+// whole search, done twice.
+void OpponentModel::root_moves(Position& pos, Depth depth, RootMove* moves, usize& moveCount) {
+
+    ExtMove   list[MAX_MOVES];
+    const int n = ordered_moves<LEGAL>(pos, list);
+
+    if (depth > 1)
+    {
+        StateInfo st;
+        for (int i = 0; i < n; ++i)
+        {
+            do_move(pos, list[i], st);
+            list[i].value = -qsearch(pos, -VALUE_INFINITE, VALUE_INFINITE, 1);
+            undo_move(pos, list[i]);
+        }
+
+        std::stable_sort(list, list + n,
+                         [](const ExtMove& a, const ExtMove& b) { return a.value > b.value; });
+    }
+
+    for (int i = 0; i < n; ++i)
+        moves[i] = {list[i], -VALUE_INFINITE, false};
+
+    moveCount = usize(n);
+}
+
+// Finds the opponent's best score exactly. The first move is searched with an
+// open window. Each later move is tested with a null window against the best
+// score so far, and re-searched with an open window only if it is better.
+// Moves whose score is found exactly get it in `value`. Returns false if the
+// search was stopped.
+bool OpponentModel::find_best(
+  Position& pos, Depth depth, RootMove* moves, usize& moveCount, Value& bestValue) {
+
+    assert(depth > 0);
+
+    accumulatorStack->reset();
+    root_moves(pos, depth, moves, moveCount);
+
+    StateInfo st;
+    bestValue = -VALUE_INFINITE;
+
+    for (usize i = 0; i < moveCount; ++i)
+    {
+        RootMove& rm = moves[i];
+
+        do_move(pos, rm.move, st);
+
+        Value value;
+        if (i == 0)
+            value = -alpha_beta(pos, -VALUE_INFINITE, VALUE_INFINITE, depth - 1, 1);
+        else
+        {
+            value = -alpha_beta(pos, -(bestValue + 1), -bestValue, depth - 1, 1);
+            if (value > bestValue)
+                value = -alpha_beta(pos, -VALUE_INFINITE, -bestValue, depth - 1, 1);
+        }
+
+        undo_move(pos, rm.move);
+
+        if (stopped())
+            return false;
+
+        // Searched with an infinite upper bound and scoring above its lower
+        // bound, so the score is exact
+        if (i == 0 || value > bestValue)
+        {
+            rm.value  = value;
+            bestValue = value;
+        }
+    }
 
     return true;
 }
 
-bool OpponentModel::allowed_moves(Worker& owner, Position& pos, AllowedMoves& allowed) {
+// Tests with a null window whether move `m` scores above `alpha`. The result
+// is exact: a full-width search finds the same answer in any order. Returns
+// false if the search was stopped.
+bool OpponentModel::test_move(Position& pos, Depth depth, Move m, Value alpha, bool& above) {
+
+    assert(depth > 0 && -VALUE_INFINITE <= alpha && alpha < VALUE_INFINITE);
+
+    accumulatorStack->reset();
+
+    StateInfo st;
+    do_move(pos, m, st);
+    Value value = -alpha_beta(pos, -(alpha + 1), -alpha, depth - 1, 1);
+    undo_move(pos, m);
+
+    if (stopped())
+        return false;
+
+    above = value > alpha;
+    return true;
+}
+
+// A move is kept if it scores at least `best - threshold`. Moves whose score
+// find_best() found exactly are compared directly; the others are tested.
+bool OpponentModel::decide(
+  Position& pos, Depth depth, Value threshold, RootMove* moves, usize& moveCount) {
+
+    assert(threshold >= 0);
+
+    Value bestValue;
+    if (!find_best(pos, depth, moves, moveCount, bestValue))
+        return false;
+
+    const Value cutoff = bestValue - threshold;
+
+    for (usize i = 0; i < moveCount; ++i)
+    {
+        RootMove& rm = moves[i];
+
+        if (rm.value != -VALUE_INFINITE)
+            rm.kept = rm.value >= cutoff;
+
+        // When the best score is a forced loss close to -VALUE_INFINITE,
+        // every move is within the threshold
+        else if (cutoff - 1 < -VALUE_INFINITE)
+            rm.kept = true;
+
+        else if (!test_move(pos, depth, rm.move, cutoff - 1, rm.kept))
+            return false;
+    }
+
+    return true;
+}
+
+// The slower search used by describe(): an exact score for every move.
+// Returns false if the search was stopped.
+bool OpponentModel::decide_exact(
+  Position& pos, Depth depth, Value threshold, RootMove* moves, usize& moveCount) {
+
+    assert(depth > 0 && threshold >= 0);
+
+    accumulatorStack->reset();
+    root_moves(pos, depth, moves, moveCount);
+
+    StateInfo st;
+    Value     bestValue = -VALUE_INFINITE;
+
+    for (usize i = 0; i < moveCount; ++i)
+    {
+        do_move(pos, moves[i].move, st);
+        moves[i].value = -alpha_beta(pos, -VALUE_INFINITE, VALUE_INFINITE, depth - 1, 1);
+        undo_move(pos, moves[i].move);
+
+        if (stopped())
+            return false;
+
+        bestValue = std::max(bestValue, moves[i].value);
+    }
+
+    for (usize i = 0; i < moveCount; ++i)
+        moves[i].kept = moves[i].value >= bestValue - threshold;
+
+    return true;
+}
+
+bool OpponentModel::prepare(Search::Worker& owner, Position& pos, OpponentNode& node) {
 
     assert(owner.opponentDepth > 0 && pos.side_to_move() == owner.opponentColor);
     assert(owner.opponentDepth == cacheDepth && owner.opponentThreshold == cacheThresholdCp);
 
-    MoveList<LEGAL> legalMoves(pos);
+    node.legalCount = usize(generate<LEGAL>(pos, node.legalMoves) - node.legalMoves);
 
     // Nothing to decide with fewer than two moves
-    if (legalMoves.size() <= 1)
-    {
-        for (Move m : legalMoves)
-            allowed.push_back(m);
+    node.allAllowed = node.legalCount <= 1;
+    if (node.allAllowed)
         return true;
-    }
 
-    const Key    key   = pos.key();
-    FilterEntry& entry = filterCache[key & (FilterCacheSize - 1)];
+    node.key       = cache_key(pos);
+    node.threshold = UCIEngine::from_cp(owner.opponentThreshold, pos);
 
-    if (entry.key != key)
+    FilterEntry& entry = cache_entry(node.key);
+
+    if (entry.key == node.key)
     {
-        RootResults results;
-        Value       bestValue;
-        Value       threshold = UCIEngine::from_cp(owner.opponentThreshold, pos);
-        u64         nodesBefore = worker->nodes;
+        node.bestValue = entry.bestValue;
+        node.tested    = entry.tested;
+        node.allowed   = entry.allowed;
+    }
+    else
+    {
+        RootMove moves[MAX_MOVES];
+        usize    moveCount;
+        u64      nodesBefore = nodes;
 
-        bool completed =
-          search(pos, owner.opponentDepth, threshold, owner.tbConfig, results, bestValue);
+        bool completed = find_best(pos, owner.opponentDepth, moves, moveCount, node.bestValue);
 
         // Count the low-depth search towards the owner's nodes, so node limits
-        // and the reported nodes per second include it.
-        owner.nodes += u64(worker->nodes) - nodesBefore;
+        // and the reported nodes per second include it
+        owner.nodes += nodes - nodesBefore;
 
         // Results of a stopped search are never stored
         if (!completed)
             return false;
 
-        std::memset(entry.allowed, 0, sizeof(entry.allowed));
+        assert(moveCount == node.legalCount);
 
-        usize i = 0;
-        for (Move m : legalMoves)
-        {
-            for (const RootResult& r : results)
-                if (r.move == m && is_kept(r, bestValue, threshold))
-                    entry.allowed[i / 64] |= u64(1) << (i % 64);
-            ++i;
-        }
+        // Moves whose score find_best() found exactly need no test
+        node.tested = node.allowed = MoveBits{};
 
-        entry.key = key;
+        for (usize j = 0; j < moveCount; ++j)
+            if (moves[j].value != -VALUE_INFINITE)
+            {
+                const usize i = index_of(node, moves[j].move);
+                node.tested.set(i);
+                if (moves[j].value >= node.bestValue - node.threshold)
+                    node.allowed.set(i);
+            }
+
+        entry = {node.key, node.bestValue, node.tested, node.allowed};
     }
 
-    usize i = 0;
-    for (Move m : legalMoves)
-    {
-        if (entry.allowed[i / 64] & (u64(1) << (i % 64)))
-            allowed.push_back(m);
-        ++i;
-    }
-
-    // The best move is always kept
-    assert(allowed.size() > 0);
+    // When the best score is a forced loss close to -VALUE_INFINITE, every
+    // move is within the threshold
+    node.allAllowed = node.bestValue - node.threshold - 1 < -VALUE_INFINITE;
 
     return true;
 }
 
-std::string OpponentModel::describe(Position&                 pos,
-                                    int                       depth,
-                                    int                       thresholdCp,
-                                    const Tablebases::Config& tbConfig) {
+bool OpponentModel::is_allowed(
+  Search::Worker& owner, Position& pos, OpponentNode& node, Move m, bool& allowed) {
+
+    if (node.allAllowed)
+    {
+        allowed = true;
+        return true;
+    }
+
+    assert(cache_key(pos) == node.key);
+
+    const usize i = index_of(node, m);
+
+    if (!node.tested.test(i))
+    {
+        bool above;
+        u64  nodesBefore = nodes;
+
+        bool completed = test_move(pos, owner.opponentDepth, m,
+                                   node.bestValue - node.threshold - 1, above);
+
+        owner.nodes += nodes - nodesBefore;
+
+        if (!completed)
+            return false;
+
+        node.tested.set(i);
+        if (above)
+            node.allowed.set(i);
+
+        // Store the verdict. While searching earlier moves of this node, the
+        // main search may have replaced the cache entry with another position.
+        FilterEntry& entry = cache_entry(node.key);
+
+        if (entry.key != node.key)
+            entry = {node.key, node.bestValue, node.tested, node.allowed};
+        else
+        {
+            entry.tested.set(i);
+            if (above)
+                entry.allowed.set(i);
+        }
+    }
+
+    allowed = node.allowed.test(i);
+    return true;
+}
+
+std::string OpponentModel::describe(Position& pos, int depth, int thresholdCp) {
 
     if (depth <= 0)
         return "Opponent modeling is disabled (Opponent Depth is 0).";
@@ -327,17 +521,41 @@ std::string OpponentModel::describe(Position&                 pos,
     if (legalCount == 0)
         return "No legal moves.";
 
-    RootResults results;
-    Value       bestValue;
-    Value       threshold   = UCIEngine::from_cp(thresholdCp, pos);
-    u64         nodesBefore = worker->nodes;
-    TimePoint   startTime   = now();
+    const Value threshold = UCIEngine::from_cp(thresholdCp, pos);
 
-    if (!search(pos, depth, threshold, tbConfig, results, bestValue))
+    RootMove exact[MAX_MOVES], fast[MAX_MOVES];
+    usize    exactCount, fastCount;
+
+    u64       nodesBefore = nodes;
+    TimePoint startTime   = now();
+
+    if (!decide_exact(pos, depth, threshold, exact, exactCount))
         return "The search was stopped.";
 
-    const u64       nodes   = u64(worker->nodes) - nodesBefore;
-    const TimePoint elapsed = now() - startTime;
+    const u64       exactNodes = nodes - nodesBefore;
+    const TimePoint exactTime  = now() - startTime;
+
+    nodesBefore = nodes;
+    startTime   = now();
+
+    if (!decide(pos, depth, threshold, fast, fastCount))
+        return "The search was stopped.";
+
+    const u64       fastNodes = nodes - nodesBefore;
+    const TimePoint fastTime  = now() - startTime;
+
+    // The fast search, used during the main search, must keep the same moves
+    bool agree = exactCount == fastCount;
+    for (usize i = 0; i < exactCount && agree; ++i)
+    {
+        const RootMove* f = std::find_if(fast, fast + fastCount, [&](const RootMove& rm) {
+            return rm.move == exact[i].move;
+        });
+        agree = f != fast + fastCount && f->kept == exact[i].kept;
+    }
+
+    std::stable_sort(exact, exact + exactCount,
+                     [](const RootMove& a, const RootMove& b) { return a.value > b.value; });
 
     std::stringstream out;
     usize             keptCount = 0;
@@ -346,21 +564,21 @@ std::string OpponentModel::describe(Position&                 pos,
         << " at depth " << depth << ", threshold " << thresholdCp << " cp (" << threshold
         << " internal units)\n";
 
-    // search() returns the moves sorted: exact scores first, best first, then
-    // upper bounds, highest first
-    for (const RootResult& r : results)
+    for (usize i = 0; i < exactCount; ++i)
     {
-        bool kept = is_kept(r, bestValue, threshold);
-        keptCount += kept;
+        keptCount += exact[i].kept;
 
-        out << std::left << std::setw(7) << UCIEngine::move(r.move, pos.is_chess960())
-            << std::setw(14)
-            << (r.exact ? "" : "<= ") + UCIEngine::format_score(Score(r.value, pos))
-            << (kept ? "kept" : "discarded") << "\n";
+        out << std::left << std::setw(7) << UCIEngine::move(exact[i].move, pos.is_chess960())
+            << std::setw(14) << UCIEngine::format_score(Score(exact[i].value, pos))
+            << (exact[i].kept ? "kept" : "discarded") << "\n";
     }
 
-    out << "Kept " << keptCount << " of " << legalCount << " moves (" << nodes << " nodes, "
-        << elapsed << " ms)";
+    out << "Kept " << keptCount << " of " << legalCount << " moves (exact scores: " << exactNodes
+        << " nodes, " << exactTime << " ms; fast search: " << fastNodes << " nodes, " << fastTime
+        << " ms)";
+
+    if (!agree)
+        out << "\nERROR: the fast search used during the main search keeps different moves";
 
     return out.str();
 }

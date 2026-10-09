@@ -206,17 +206,12 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
         }
 
         sharedState.sharedHistories.clear();
-        if (sharedState.opponentSharedHistories)
-            sharedState.opponentSharedHistories->clear();
         for (auto pair : counts)
         {
             NumaIndex numaIndex = pair.first;
             u64       count     = pair.second;
             auto      f         = [&]() {
                 sharedState.sharedHistories.try_emplace(numaIndex, next_power_of_two(count));
-                if (sharedState.opponentSharedHistories)
-                    sharedState.opponentSharedHistories->try_emplace(numaIndex,
-                                                                     next_power_of_two(count));
             };
             if (doBindThreads)
                 numaConfig.execute_on_numa_node(numaIndex, f);

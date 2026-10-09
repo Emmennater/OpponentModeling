@@ -182,16 +182,10 @@ Search::Worker::Worker(SharedState&                    sharedState,
     network(sharedState.network),
     refreshTable(network[token]) {
 
-    // Main search workers get an opponent model, built on this thread so that
-    // its memory is on the same NUMA node. Its SharedState leaves the
-    // opponent-model fields null, so its worker gets no opponent model.
-    if (sharedState.opponentTT)
-    {
-        SharedState opponentState(options, threads, *sharedState.opponentTT,
-                                  *sharedState.opponentSharedHistories, network);
-        opponentModel = std::make_unique<OpponentModel>(opponentState, threadId, numaThreadId,
-                                                        numaTotalThreads, token);
-    }
+    // The opponent model is built on this thread, so that its memory is on
+    // the same NUMA node
+    opponentModel = std::make_unique<OpponentModel>(network, token, threads.stop,
+                                                    usize(int(options["Opponent Hash"])));
 
     clear();
 }
@@ -199,12 +193,11 @@ Search::Worker::Worker(SharedState&                    sharedState,
 Search::Worker::~Worker() = default;
 
 std::string Search::Worker::describe_opponent_moves(Position& pos) {
-    if (!opponentModel)
-        return "This worker has no opponent model.";
-
     return opponentModel->describe(pos, int(options["Opponent Depth"]),
-                                   int(options["Centipawn Threshold"]), tbConfig);
+                                   int(options["Centipawn Threshold"]));
 }
+
+void Search::Worker::set_opponent_cache_size(usize mb) { opponentModel->resize_cache(mb); }
 
 void Search::Worker::ensure_network_replicated() {
     // Access once to force lazy initialization, avoiding initialization during search
@@ -215,8 +208,7 @@ void Search::Worker::start_searching() {
 
     accumulatorStack.reset();
 
-    if (opponentModel)
-        opponentModel->start_search(opponentDepth, opponentThreshold);
+    opponentModel->start_search(opponentDepth, opponentThreshold);
 
     // Non-main threads go directly to iterative_deepening()
     if (!is_mainthread())
@@ -228,8 +220,6 @@ void Search::Worker::start_searching() {
     main_manager()->tm.init(limits, rootPos.side_to_move(), rootPos.game_ply(), options,
                             main_manager()->originalTimeAdjust);
     tt.new_search();
-    if (opponentModel)
-        opponentModel->new_search();
     main_manager()->updates.onStart();
 
     if (rootMoves.empty())
@@ -742,8 +732,7 @@ void Search::Worker::clear() {
 
     refreshTable.clear(network[numaAccessToken]);
 
-    if (opponentModel)
-        opponentModel->clear();
+    opponentModel->clear();
 }
 
 
@@ -1138,12 +1127,12 @@ moves_loop:  // When in check, search starts here
     // low-depth search finds plausible. This comes after every early exit above,
     // so nodes that end early never pay for the low-depth search. The root is
     // never an opponent node: the opponent is the side not to move at the root.
-    AllowedMoves allowedMoves;
-    const bool   restrictMoves = opponentModel && opponentDepth > 0 && us == opponentColor;
+    OpponentNode opponentNode;
+    const bool   restrictMoves = opponentDepth > 0 && us == opponentColor;
 
     assert(!(rootNode && restrictMoves));
 
-    if (restrictMoves && !opponentModel->allowed_moves(*this, pos, allowedMoves))
+    if (restrictMoves && !opponentModel->prepare(*this, pos, opponentNode))
         return VALUE_ZERO;  // The search was stopped, so the value is never used
 
     const PieceToHistory* contHist[] = {
@@ -1169,12 +1158,6 @@ moves_loop:  // When in check, search starts here
 
         // Check for legality
         if (!pos.legal(move))
-            continue;
-
-        // Skip moves the opponent model rules out, before they are counted, so
-        // move-count pruning and reductions only see the allowed moves
-        if (restrictMoves
-            && std::find(allowedMoves.begin(), allowedMoves.end(), move) == allowedMoves.end())
             continue;
 
         // At root obey the "searchmoves" option and skip moves not listed in Root
@@ -1277,6 +1260,24 @@ moves_loop:  // When in check, search starts here
                 // Prune moves with negative SEE
                 if (!pos.see_ge(move, -23 * lmrDepth * lmrDepth))
                     continue;
+            }
+        }
+
+        // Opponent modeling: skip moves the model rules out. Moves are only
+        // tested here, once the pruning above has decided to search them, so
+        // moves that would be pruned anyway are never tested. A skipped move
+        // is not counted, so move-count pruning and reductions only see the
+        // allowed moves and the moves pruned above.
+        if (restrictMoves)
+        {
+            bool allowed;
+            if (!opponentModel->is_allowed(*this, pos, opponentNode, move, allowed))
+                return VALUE_ZERO;  // The search was stopped, so the value is never used
+
+            if (!allowed)
+            {
+                ss->moveCount = --moveCount;
+                continue;
             }
         }
 
