@@ -84,6 +84,15 @@ const OptionId kOpponentModelOwnRatingId{
          "Rating the Maia-3 opponent model is told the opponent is playing "
          "against, that is the rating of the side this engine plays.",
      .visibility = OptionId::kAlwaysVisible}};
+const OptionId kOpponentTreeReuseId{
+    {.long_flag = "opponent-tree-reuse",
+     .uci_option = "OpponentTreeReuse",
+     .help_text =
+         "With an opponent model, whether a search keeps the previous search's "
+         "tree. The root compares its candidate moves at equal visits "
+         "(OpponentRootCandidates), and visits kept from the previous search "
+         "are uneven, which favors the moves it searched most.",
+     .visibility = OptionId::kAlwaysVisible}};
 
 class ClassicSearch : public SearchBase {
  public:
@@ -174,8 +183,11 @@ void ClassicSearch::UpdateOpponentModel() {
 
   // The tree's values and opponent-node move probabilities depend on the
   // model and on which side is the opponent: the side not to move at the root.
+  // Unless reuse is asked for, every search starts afresh, since the root
+  // compares moves at equal visits and kept visits are uneven.
   if (model_changed ||
-      (!weights.empty() && black_to_move != opponent_black_to_move_)) {
+      (!weights.empty() && (black_to_move != opponent_black_to_move_ ||
+                            !options_->Get<bool>(kOpponentTreeReuseId)))) {
     tree_->TrimTreeAtHead();
   }
   opponent_black_to_move_ = black_to_move;
@@ -265,6 +277,7 @@ class ClassicSearchFactory : public SearchFactory {
     parser->Add<FloatOption>(kOpponentModelRatingId, 500.0f, 3000.0f) = 1300.0f;
     parser->Add<FloatOption>(kOpponentModelOwnRatingId, 500.0f, 3000.0f) =
         1300.0f;
+    parser->Add<BoolOption>(kOpponentTreeReuseId) = false;
   }
 };
 
