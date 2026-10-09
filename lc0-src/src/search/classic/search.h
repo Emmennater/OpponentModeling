@@ -203,12 +203,15 @@ class Search {
     int rounds = 0;      // Rounds in a run.
     int64_t budget = 0;  // Visits a run spreads over its rounds.
     int64_t target = 0;  // Visits each candidate needs to end the round.
-    // The move ranked best at the last halving, which is the best move.
+    // The move ranked best at the last halving. The best move is this one, or
+    // the current round's best while its visits are equal: RootHalvingBest().
     std::optional<Move> leader;
   };
   RootHalving root_halving_ GUARDED_BY(nodes_mutex_);
   // Whether the root uses sequential halving. Valid after UpdateRootHalving().
   bool UsesRootHalving() const REQUIRES(nodes_mutex_);
+  // The best root move by sequential halving, if it has ranked the moves yet.
+  std::optional<Move> RootHalvingBest() const REQUIRES(nodes_mutex_);
   // Sets the candidates up on the first call, and ends every round whose
   // candidates all have the target visits.
   void UpdateRootHalving() REQUIRES(nodes_mutex_);

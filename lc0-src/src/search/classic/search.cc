@@ -819,15 +819,17 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
       });
 
   // Opponent modeling: with sequential halving at the root, the best move is
-  // the one ranked best at the last halving, not the one with most visits,
-  // unless a proven result decides.
-  if (parent == root_node_ && root_halving_.leader && !edges.empty()) {
+  // the one ranked best at equal visits (see RootHalvingBest), not the one
+  // with most visits, unless a proven result decides.
+  const auto halving_best =
+      parent == root_node_ ? RootHalvingBest() : std::nullopt;
+  if (halving_best && !edges.empty()) {
     const auto is_proven = [](const EdgeAndNode& edge) {
       return edge.GetN() > 0 && edge.IsTerminal() && edge.GetWL(0.0f) != 0.0f;
     };
     const auto leader = std::find_if(
         edges.begin(), edges.end(), [&](const EdgeAndNode& edge) {
-          return edge.GetMove() == *root_halving_.leader;
+          return edge.GetMove() == *halving_best;
         });
     if (leader != edges.end() && !is_proven(edges.front()) &&
         !is_proven(*leader)) {
@@ -849,6 +851,33 @@ EdgeAndNode Search::GetBestChildNoTemperature(Node* parent, int depth) const {
 
 bool Search::UsesRootHalving() const {
   return root_halving_.initialized && !root_halving_.initial.empty();
+}
+
+std::optional<Move> Search::RootHalvingBest() const {
+  const auto& halving = root_halving_;
+  if (!UsesRootHalving() || !halving.leader) return std::nullopt;
+  // The candidates of the current round get visits in turn, so they stay
+  // within a few visits of each other, and ranking them now compares them at
+  // equal visits, with more visits than the last halving had. Their visits
+  // are unequal when a run has just started and the dropped candidates are
+  // catching up, or when they bring visits from an earlier search. The last
+  // halving's ranking stands then.
+  std::vector<EdgeAndNode> edges;
+  for (const auto& edge : root_node_->Edges()) edges.push_back(edge);
+  uint32_t fewest = std::numeric_limits<uint32_t>::max();
+  uint32_t most = 0;
+  for (int index : halving.candidates) {
+    fewest = std::min(fewest, edges[index].GetN());
+    most = std::max(most, edges[index].GetN());
+  }
+  if (fewest == 0 || most > fewest * 1.05) return halving.leader;
+  const float draw_score = GetDrawScore(/* is_odd_depth= */ false);
+  const int best = *std::max_element(
+      halving.candidates.begin(), halving.candidates.end(), [&](int a, int b) {
+        return edges[a].GetQ(0.0f, draw_score) <
+               edges[b].GetQ(0.0f, draw_score);
+      });
+  return edges[best].GetMove();
 }
 
 void Search::StartRootHalvingRun() {
