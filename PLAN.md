@@ -70,54 +70,60 @@ Main workers are created on their own thread so their memory lands on the right 
 | Options, network weights | Shared | Shared | Read only |
 
 ## 4. The Low-Depth Search
-`OpponentModel::filter(Position& pos, ...)` runs the low-depth search for the opponent to move in `pos` and returns the allowed moves, or reports that it was stopped.
+`OpponentModel::search` runs the low-depth search for the opponent to move in a position. It returns a result for every legal move, or reports that it was stopped. `OpponentModel::allowed_moves` turns the results into the allowed moves, using the filter cache described in the next section.
 
 ### Setup
-`search()` reads several fields that Stockfish's normal root code sets up (`start_searching`, `iterative_deepening` and `start_thinking`). The root loop sets them itself on the opponent-model worker:
+`search()` reads several fields that Stockfish's normal root code sets up (`start_searching`, `iterative_deepening` and `start_thinking`). The low-depth search sets them itself on the opponent-model worker:
 
 - **Network state:** `accumulatorStack.reset()`, as `start_searching` does ([search.cpp:193](stockfish/src/search.cpp#L193)). The first evaluation rebuilds the state from the position, using the worker's refresh cache.
 - **Search stack:** a local `Stack` array with the same sentinel entries `iterative_deepening` sets up ([search.cpp:289-303](stockfish/src/search.cpp#L289-L303)).
-- **Root entry of the stack:** `inCheck`, and the root's static evaluation. Children compare their own evaluation against it to set the `improving` and `opponentWorsening` flags ([search.cpp:863-864](stockfish/src/search.cpp#L863-L864)).
-- **`rootDepth`:** the opponent depth. It is used in the singular extension margins.
-- **`rootMoves` and `pvIdx`:** a single entry with score 0, and `pvIdx = 0`. Every call to `search()` reads `rootMoves[pvIdx].score` once `rootDepth >= 16` ([search.cpp:727](stockfish/src/search.cpp#L727)), so the list must not be empty.
+- **Root entry of the stack:** `inCheck`, `moveCount`, and the root's static evaluation. Children compare their own evaluation against it to set the `improving` and `opponentWorsening` flags ([search.cpp:863-864](stockfish/src/search.cpp#L863-L864)).
+- **`rootDepth`:** the depth of the current iteration, as in the main search. It is used in the singular extension margins.
+- **`rootMoves` and `pvIdx`:** a single placeholder entry with score 0, and `pvIdx = 0`. Every call to `search()` reads `rootMoves[pvIdx].score` once `rootDepth >= 16` ([search.cpp:727](stockfish/src/search.cpp#L727)), so the list must not be empty. A score of 0 means `search()` never treats the low-depth search as looking for a mate. `RootMove` allocates memory, so the entry is created once, in the `OpponentModel` constructor.
 - **`rootDelta`:** the width of the current root window. The reduction formula divides by it ([search.cpp:1885-1888](stockfish/src/search.cpp#L1885-L1888)).
 - **`optimism`:** 0 for both colors. The main search derives it from the previous iteration's score, which the low-depth search does not have.
 - **`nmpMinPly`, `selDepth`:** 0. **`lastIterationIdxPV`:** cleared. **`tbConfig`:** copied from the main worker, so tablebases are used the same way.
 
-### Root loop
-The legal moves are ordered by a `MovePicker`, built the same way as in `search()` ([search.cpp:1111-1112](stockfish/src/search.cpp#L1111-L1112)) but with the opponent-model worker's histories and hash table move. The lower bound of the root window (alpha) is kept at `best - threshold` and raised as better moves are found:
+The main search also ages two history tables at the start of every search ([search.cpp:326-330](stockfish/src/search.cpp#L326-L330)): `lowPlyHistory` is reset and `mainHistory` is scaled down. The opponent-model worker runs thousands of small searches, so doing this for each of them would erase what it learns. Instead, `OpponentModel::start_search` ages its histories once per main search, the same rate a normal Stockfish worker sees.
+
+### Iterative deepening
+Like the main search, the low-depth search deepens one ply at a time, from depth 1 up to the opponent depth. Each iteration searches the moves in the order of the previous iteration's scores. The first iteration uses a `MovePicker`, built the same way as in `search()` ([search.cpp:1111-1112](stockfish/src/search.cpp#L1111-L1112)), but with the opponent-model worker's histories and hash table move. The result of the last iteration is used.
+
+Iterative deepening is needed for "Opponent Depth" to mean what Stockfish's own depth means. Stockfish reduces the depth by one at nodes with no hash table move, once the depth is 6 or more ([search.cpp:1051-1052](stockfish/src/search.cpp#L1051-L1052)). In a normal search, the earlier iterations supply hash table moves, so this rarely happens. A single pass straight to the full depth has no hash table moves, so it happens almost everywhere and the search is much shallower than its nominal depth. Its result then also depends on whatever earlier searches left in the hash table. Measured on the same position at depth 12, three single-pass searches in a row kept 20, 15 and 19 moves. With iterative deepening, three searches kept 22, 22 and 22 moves.
+
+### Each iteration
+The lower bound of the root window (alpha) is kept just below `best - threshold`, and raised as better moves are found:
 
 ```
-best = -infinity, kept = {}
-for each legal move m, in MovePicker order:
-    a = max(best - threshold, -VALUE_INFINITE)
+best = -infinity
+for each move m, in order:
+    a = max(best - threshold - 1, -VALUE_INFINITE)
     rootDelta = VALUE_INFINITE - a
     do_move(m)
-    v = -search<NonPV>(pos, ss + 1, -(a + 1), -a, depth - 1, cutNode = true)   // test: is v > a?
-    if v > a:
-        v = -search<PV>(pos, ss + 1, -VALUE_INFINITE, -a, depth - 1, false)    // exact score
+    if a > -VALUE_INFINITE:
+        v = -search<NonPV>(pos, ss + 1, -(a + 1), -a, depth - 1, cutNode = true)   // test: is v > a?
+    if a == -VALUE_INFINITE or v > a:
+        v = -search<PV>(pos, ss + 1, -VALUE_INFINITE, -a, depth - 1, false)        // exact score
     undo_move(m)
     if stopped: return "stopped"
-    if v <= a: continue                       // discard
-    add (m, v) to kept
-    if v > best:
-        best = v
-        remove from kept every move with value <= best - threshold
-return the moves in kept
+    result[m] = (v, exact = v > a)
+    best = max(best, v)
+sort the moves: exact scores first, best first, then upper bounds, highest first
 ```
 
-This is principal variation search with a moving lower bound. Most moves need only the cheap test search. A move is re-searched with an open window only when it might be kept.
+After the last iteration, a move is kept if its score is exact and at least `best - threshold`. This is principal variation search with a moving lower bound. Most moves need only the cheap test search. A move is re-searched with an open window only when it might be kept.
 
 ### Why the result is correct
-- **A discarded move would also be discarded at the end.** A move fails the test only if its true score is at most `a = best - threshold`. Since `best` only rises, the move is at least `threshold` below the final best too.
-- **Kept moves can be filtered again without searching them again.** Each kept move has an exact score, so when `best` rises, the new cutoff can be applied to the stored values directly.
-- **The result is never empty.** The first move is searched with `a = -VALUE_INFINITE`, so it is kept, and the best move is never removed. The main search therefore always finds at least one opponent move when there is a legal one.
+- **A move that fails the test would also be discarded at the end.** It fails only if its true score is at most `a = best - threshold - 1`. Since `best` only rises, it is more than `threshold` below the final best too.
+- **Every other move has an exact score.** It was searched with an infinite upper bound, so its score can be compared with the final best directly, without searching it again.
+- **The result is never empty.** The first move is searched with `a = -VALUE_INFINITE`, so its score is exact. A move that sets a new best scores above its own `a`, so its score is exact too. The best move is therefore always kept, and the main search always finds at least one opponent move when there is a legal one.
 - **Mate scores are handled.** `a` is clamped to `-VALUE_INFINITE`, because `best - threshold` can go below it when the opponent is being mated. If the opponent has a forced mate, only the mating moves come within the threshold, so only they are kept.
 
 ### Other details
 - If the opponent has only one legal move, no low-depth search is run.
 - The opponent-model worker's node count is added to the main worker's after each low-depth search. Node limits (`go nodes`) and the reported nodes per second then include all the work done.
-- The low-depth search does a single pass at the full opponent depth, with no iterative deepening. Its hash table supplies the first move to try in positions it has seen before.
+- After the last iteration, the best move and its exact score are stored in the opponent-model hash table, so the move is tried first the next time the position is searched.
+- Iterative deepening and exact scores for every kept move cost more than a normal Stockfish search to the same depth. At depth 12 the low-depth search used about 1.7 times as many nodes as `go depth 12` on the same position, and at depth 16 about 3.5 times. At the default depth of 2, a low-depth search typically takes a few hundred nodes.
 
 ## 5. Filter Cache
 Each main worker has its own filter cache, held in its `OpponentModel`. It is a fixed-size table of 2^16 entries. Each entry holds a 64-bit position key and a 256-bit mask. Bit *i* of the mask says whether the *i*-th move of `MoveList<LEGAL>` is allowed. Legal move generation always lists a position's moves in the same order, so the mask fits in 32 bytes no matter how many moves are kept. In quiet positions most moves are often within 200 centipawns, so storing the moves themselves would take far more space. The table takes about 2.5 MB per thread.
@@ -175,7 +181,7 @@ From the main search's point of view, the game tree is the normal one with some 
 Values in the main hash table depend on which side is the opponent, and on the depth and threshold. `Engine::go` ([engine.cpp:153](stockfish/src/engine.cpp#L153)) remembers the color to move and the two parameters from the previous search. If any of them has changed, it clears the main hash table before starting. In a normal game the engine always plays the same color, so this only happens when analyzing positions for both sides or when the options change. The opponent-model hash table does not need clearing: it holds ordinary Stockfish search results, which don't depend on either.
 
 ## 7. Debug Command
-A new UCI command, `opponentmoves`, runs the low-depth search for the side to move in the current position and prints every legal move with its score, or its upper bound if it was discarded, and whether it was kept. It runs on the main search thread through `ThreadPool::run_on_thread`, so it uses the thread's large stack and NUMA binding. It is added next to the other non-standard commands such as `d` and `eval` ([uci.cpp:148-165](stockfish/src/uci.cpp#L148-L165)). This makes it possible to check the filter on chosen positions without running a full search.
+A new UCI command, `opponentmoves`, runs the low-depth search for the side to move in the current position and prints every legal move with its score, or its upper bound if it was discarded, and whether it was kept. It also prints the threshold in internal units, and the nodes and time the search took. It neither reads nor fills the filter cache. It runs on the main search thread through `ThreadPool::run_on_thread`, so it uses the thread's large stack and NUMA binding. It is added next to the other non-standard commands such as `d` and `eval` ([uci.cpp:148-165](stockfish/src/uci.cpp#L148-L165)). This makes it possible to check the filter on chosen positions without running a full search.
 
 ## 8. Testing
 With the model enabled, the engine searches a different tree, so Stockfish's own checks no longer have a known right answer. The `bench` node count changes, and the signature test in [tests/signature.sh](stockfish/tests/signature.sh) fails by design. Most of the testing is therefore manual. The automated checks that still apply are used where they can be:
@@ -193,11 +199,10 @@ With the model enabled, the engine searches a different tree, so Stockfish's own
 Each step is a separate commit that builds and passes the checks listed for it.
 
 1. **Plumbing:** the three UCI options, `from_cp`, the opponent-model hash table and shared histories, `SharedState` fields, and the `OpponentModel` class with its worker but no search yet. `bench` still gives 2497913.
-2. **Low-depth search:** the root loop, the filter cache and the `opponentmoves` command. Check the filter on chosen positions.
+2. **Low-depth search:** the iterative-deepening root loop, the filter cache and the `opponentmoves` command. Check the filter on chosen positions.
 3. **Search integration:** the hook and skip in `search()`, node counting, and clearing the main hash table when the model changes. Check `bench` with the model disabled, then a debug build with it enabled.
 4. **Measurement and documentation:** speed measurements, and README updates with the results and any changes made along the way.
 
 ## Possible Later Changes
 - Skipping the low-depth search when the remaining depth is low, if it turns out to be too slow near the leaves.
 - Restricting the opponent's moves in ProbCut and quiescence search.
-- Iterative deepening in the low-depth search, if its move ordering turns out to matter.

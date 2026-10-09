@@ -350,6 +350,24 @@ void Engine::trace_eval() const {
     sync_cout << "\n" << Eval::trace(p, *network) << sync_endl;
 }
 
+std::string Engine::opponent_moves() {
+    verify_network();
+    wait_for_search_finished();
+
+    // The previous search leaves the stop flag set, and the low-depth search
+    // checks it. The next 'go' resets it in the same way.
+    threads.stop = false;
+
+    // Run on the main search thread, for its large stack and NUMA binding. The
+    // current position is used directly, so its move history is taken into account.
+    std::string result;
+    threads.run_on_thread(
+      0, [&]() { result = threads.main_thread()->worker->describe_opponent_moves(pos); });
+    threads.wait_on_thread(0);
+
+    return result;
+}
+
 const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 

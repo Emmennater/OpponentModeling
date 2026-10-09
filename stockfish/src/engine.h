@@ -104,6 +104,10 @@ class Engine {
 
     void trace_eval() const;
 
+    // Runs the opponent model's low-depth search on the current position and
+    // describes which moves it keeps
+    std::string opponent_moves();
+
     const OptionsMap& get_options() const;
     OptionsMap&       get_options();
 

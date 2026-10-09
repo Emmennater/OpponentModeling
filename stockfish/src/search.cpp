@@ -198,6 +198,14 @@ Search::Worker::Worker(SharedState&                    sharedState,
 
 Search::Worker::~Worker() = default;
 
+std::string Search::Worker::describe_opponent_moves(Position& pos) {
+    if (!opponentModel)
+        return "This worker has no opponent model.";
+
+    return opponentModel->describe(pos, int(options["Opponent Depth"]),
+                                   int(options["Centipawn Threshold"]), tbConfig);
+}
+
 void Search::Worker::ensure_network_replicated() {
     // Access once to force lazy initialization, avoiding initialization during search
     (void) (network[numaAccessToken]);
@@ -206,6 +214,9 @@ void Search::Worker::ensure_network_replicated() {
 void Search::Worker::start_searching() {
 
     accumulatorStack.reset();
+
+    if (opponentModel)
+        opponentModel->start_search(opponentDepth, opponentThreshold);
 
     // Non-main threads go directly to iterative_deepening()
     if (!is_mainthread())

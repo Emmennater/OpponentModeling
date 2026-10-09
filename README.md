@@ -39,14 +39,14 @@ The opponent-model worker never runs as the main thread, so it does not manage t
 `search()` reads some values that Stockfish's normal root code sets up, so the low-depth search sets them itself: the root move list, the root depth, the root window size, the optimism values and the sentinel entries at the start of the search stack.
 
 ### Filtering the Moves
-The low-depth search uses its own root loop. Stockfish's normal root loop only finds the best move, but we need every move within the threshold of the best. To get these, the lower bound of the search window (alpha) is set to `best - threshold` and raised as better moves are found:
+The low-depth search uses its own root loop. Stockfish's normal root loop only finds the best move, but we need every move within the threshold of the best. Like Stockfish, the low-depth search deepens one ply at a time, from depth 1 up to the opponent depth, so "Opponent Depth" means what Stockfish's own depth means. Each iteration searches the moves in the order of the previous iteration's scores. Within an iteration, the lower bound of the search window (alpha) is kept just below `best - threshold` and raised as better moves are found:
 
-1. Order the opponent's legal moves, with the best move from the opponent-model hash table first.
-2. For each move, run a cheap null-window search to test whether it scores above `best - threshold`.
-3. If it fails low, it is discarded. Its true score is at most `best - threshold`, and `best` only rises, so it can never come back.
-4. If it passes, re-search it with an open window to get its exact score and keep it. If that score is a new best, discard any kept moves that are now more than `threshold` below it.
+1. Take the opponent's legal moves in order. The first iteration uses the order of Stockfish's move picker, with the best move from the opponent-model hash table first.
+2. For each move, run a cheap null-window search to test whether it scores at least `best - threshold`.
+3. If it fails, it is discarded. Its true score is below `best - threshold`, and `best` only rises, so it can never come back.
+4. If it passes, re-search it with an open window to get its exact score.
 
-The best move is always kept, so the result is never empty. Searching the best move first makes every later test search cheaper.
+After the last iteration, the moves with an exact score of at least `best - threshold` are kept. The best move is always kept, so the result is never empty. Searching the best move first makes every later test search cheaper.
 
 ### Hooking into the Main Search
 Only two changes are made to `search()`:
@@ -73,6 +73,16 @@ This builds `stockfish\src\stockfish.exe` for the current computer's CPU. To bui
 `build.bat` puts MSYS2's tools at the front of `PATH`. The Makefile runs shell scripts, and they fail under a shell whose path contains a space, such as Git's `C:/Program Files/Git`.
 
 To check the build, run `stockfish.exe bench`. The unmodified source gives `Nodes searched : 2497913`.
+
+## Checking the Opponent Model
+The non-standard UCI command `opponentmoves` runs the low-depth search for the side to move in the current position, using the current `Opponent Depth` and `Centipawn Threshold`. It prints every legal move with its score, or an upper bound (`<=`) if the move was discarded early, and whether it is kept. For example, in the console:
+
+```
+position fen rnb1kbnr/pppp1ppp/8/4p3/4P2q/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3
+opponentmoves
+```
+
+Here only `f3h4`, winning Black's queen, is kept. Every other move is more than 200 centipawns worse.
 
 ## Model Parameters
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:

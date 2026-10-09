@@ -356,6 +356,10 @@ class Worker {
 
     void ensure_network_replicated();
 
+    // Runs the opponent model's low-depth search for the side to move in `pos`
+    // and describes the result. Used by the `opponentmoves` command.
+    std::string describe_opponent_moves(Position& pos);
+
     // Public because they need to be updatable by the stats
     ButterflyHistory mainHistory;
     LowPlyHistory    lowPlyHistory;

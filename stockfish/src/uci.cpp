@@ -160,6 +160,12 @@ void UCIEngine::loop() {
             sync_cout << engine.visualize() << sync_endl;
         else if (token == "eval")
             engine.trace_eval();
+        else if (token == "opponentmoves")
+        {
+            // Computed before taking the output lock, which opponent_moves() may need
+            const std::string result = engine.opponent_moves();
+            sync_cout << result << sync_endl;
+        }
         else if (token == "compiler")
             sync_cout << compiler_info() << sync_endl;
         else if (token == "export_net")
