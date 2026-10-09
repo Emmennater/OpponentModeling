@@ -62,18 +62,20 @@ The result for each position is cached by its hash key. The cache saves time whe
 ## Stockfish Version and Building
 The engine is based on the Stockfish 19 release (tag `sf_19`). Its source is kept in [stockfish/](stockfish/), and our changes are made directly to it.
 
-To build on Windows with MSYS2's MinGW toolchain:
+To build on Windows, install [MSYS2](https://www.msys2.org/) with the `mingw-w64-x86_64-gcc` and `mingw-w64-x86_64-make` packages, then run [build.bat](build.bat) from the repository root:
 
 ```
-cd stockfish/src
-mingw32-make -j build ARCH=x86-64-bmi2 COMP=mingw
+build.bat
 ```
 
-`ARCH=native` fails when the shell's path contains a space (such as `C:/Program Files/Git`), so the architecture is given explicitly. Run `bash ../scripts/get_native_properties.sh` to find the right value for your CPU. The evaluation network is downloaded automatically on the first build.
+This builds `stockfish\src\stockfish.exe` for the current computer's CPU. To build for other machines, pass an architecture, for example `build.bat x86-64-avx2`. MSYS2 is expected in `C:\msys64`; set `MSYS2_ROOT` if it is installed elsewhere. The evaluation network is downloaded on the first build and embedded in the executable, so `stockfish.exe` can be copied anywhere and loaded into any chess GUI that supports UCI.
 
-To check the build, run `./stockfish.exe bench`. The unmodified source gives `Nodes searched : 2497913`.
+`build.bat` puts MSYS2's tools at the front of `PATH`. The Makefile runs shell scripts, and they fail under a shell whose path contains a space, such as Git's `C:/Program Files/Git`.
+
+To check the build, run `stockfish.exe bench`. The unmodified source gives `Nodes searched : 2497913`.
 
 ## Model Parameters
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:
-- Opponent Depth: Search depth for our opponent.
-- Centipawn Threshold: The centipawn threshold used for discarding opponent moves.
+- Opponent Depth (default 2): Search depth for our opponent. 0 disables opponent modeling. The default is kept low for initial testing, because the engine is expected to run much slower than normal Stockfish.
+- Centipawn Threshold (default 200): The centipawn threshold used for discarding opponent moves.
+- Opponent Hash (default 16): Size in MB of the hash table used by the opponent's low-depth search.

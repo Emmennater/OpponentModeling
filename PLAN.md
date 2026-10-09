@@ -17,21 +17,26 @@ The opponent's moves are restricted at every node of the main search where the o
 | [Makefile](stockfish/src/Makefile) | Add `opponent_model.cpp` and `opponent_model.h` |
 
 ## 1. Parameters
-Two UCI options are added in the `Engine` constructor ([engine.cpp:107](stockfish/src/engine.cpp#L107), next to `Skill Level`):
+Three UCI options are added in the `Engine` constructor ([engine.cpp:107](stockfish/src/engine.cpp#L107), next to `Skill Level`):
 
 | Option | Default | Range | Meaning |
 |---|---|---|---|
-| `Opponent Depth` | 4 | 0–20 | Depth of the low-depth search. 0 disables opponent modeling. |
+| `Opponent Depth` | 2 | 0–20 | Depth of the low-depth search. 0 disables opponent modeling. |
 | `Centipawn Threshold` | 200 | 0–2000 | Moves more than this many centipawns worse than the best move are discarded. |
+| `Opponent Hash` | 16 | 1–`MaxHashMB` | Size in MB of the hash table used by the low-depth search. |
 
-Looking up an option by name is too slow to do at every node, so both values are copied into each worker once per search. This happens in the per-thread setup in `ThreadPool::start_thinking` ([thread.cpp:337-349](stockfish/src/thread.cpp#L337-L349)), which already copies the limits and root position into every worker. The opponent's color is set there too, as the side not to move at the root.
+The default depth is kept low for initial testing, because the engine is expected to run much slower than normal Stockfish. It can be raised once the cost has been measured.
+
+`Opponent Hash` works like the existing `Hash` option ([engine.cpp:89-93](stockfish/src/engine.cpp#L89-L93)): changing it resizes the table through a callback.
+
+Looking up an option by name is too slow to do at every node, so `Opponent Depth` and `Centipawn Threshold` are copied into each worker once per search. This happens in the per-thread setup in `ThreadPool::start_thinking` ([thread.cpp:337-349](stockfish/src/thread.cpp#L337-L349)), which already copies the limits and root position into every worker. The opponent's color is set there too, as the side not to move at the root.
 
 **Centipawns are not Stockfish's internal units.** Stockfish reports scores in centipawns using a scale that depends on the material on the board ([uci.cpp:585-594](stockfish/src/uci.cpp#L585-L594)). At full material, 100 centipawns is about 304 internal units. A new function `UCIEngine::from_cp(int cp, const Position& pos)` is added next to `to_cp` to do the reverse conversion. The threshold is converted at the root of each low-depth search, so "200 centipawns" means the same thing it would in Stockfish's own output for that position.
 
 ## 2. Engine-Level State
 The opponent-model workers need their own hash table and their own set of shared history tables. Both are owned by `Engine`, next to the existing ones ([engine.h:130-136](stockfish/src/engine.h#L130-L136)):
 
-- **`opponentTT`:** a `TranspositionTable` with a fixed size of 16 MB, shared by all opponent-model workers, just as `tt` is shared by all main workers. It is resized in `Engine::set_tt_size` ([engine.cpp:257](stockfish/src/engine.cpp#L257)) and cleared in `Engine::search_clear` ([engine.cpp:161](stockfish/src/engine.cpp#L161)). Its age (`new_search()`) is advanced by the main thread at the start of each search, where the main table's is.
+- **`opponentTT`:** a `TranspositionTable` sized by `Opponent Hash`, shared by all opponent-model workers, just as `tt` is shared by all main workers. A new `Engine::set_opponent_tt_size` resizes it, mirroring `Engine::set_tt_size` ([engine.cpp:257](stockfish/src/engine.cpp#L257)). It is called by the option's callback, and from `Engine::resize_threads` ([engine.cpp:247-255](stockfish/src/engine.cpp#L247-L255)), which resizes the main table whenever the thread count changes. The table is cleared in `Engine::search_clear` ([engine.cpp:161](stockfish/src/engine.cpp#L161)). Its age (`new_search()`) is advanced by the main thread at the start of each search, where the main table's is.
 - **`opponentSharedHists`:** a `std::map<NumaIndex, SharedHistories>`, built in `ThreadPool::set` with the same per-NUMA-node thread counts as the main one ([thread.cpp:208-220](stockfish/src/thread.cpp#L208-L220)).
 
 `SharedState` ([search.h:194-211](stockfish/src/search.h#L194-L211)) gets two optional pointers to these. The `SharedState` built for an opponent-model worker leaves them null, which is how a worker knows not to create an opponent model of its own.
@@ -173,22 +178,26 @@ Values in the main hash table depend on which side is the opponent, and on the d
 A new UCI command, `opponentmoves`, runs the low-depth search for the side to move in the current position and prints every legal move with its score, or its upper bound if it was discarded, and whether it was kept. It runs on the main search thread through `ThreadPool::run_on_thread`, so it uses the thread's large stack and NUMA binding. It is added next to the other non-standard commands such as `d` and `eval` ([uci.cpp:148-165](stockfish/src/uci.cpp#L148-L165)). This makes it possible to check the filter on chosen positions without running a full search.
 
 ## 8. Testing
+With the model enabled, the engine searches a different tree, so Stockfish's own checks no longer have a known right answer. The `bench` node count changes, and the signature test in [tests/signature.sh](stockfish/tests/signature.sh) fails by design. Most of the testing is therefore manual. The automated checks that still apply are used where they can be:
+
 1. **Disabled model:** with `Opponent Depth` set to 0, `bench` must report exactly `Nodes searched : 2497913`, the same as unmodified `sf_19`. This shows the changes do nothing when disabled.
-2. **Assertions:** build with `debug=yes` and run `bench` with the model enabled. Stockfish's assertions check, among other things, search windows, depths, and the mate/stalemate condition above.
-3. **Filter behavior:** run `opponentmoves` on chosen positions. These include positions with one hard-to-find good move, positions in check, positions with a forced mate for either side, and positions with a single legal move.
-4. **Speed:** compare nodes per second and time to reach a given depth with the model enabled and disabled, at several opponent depths.
-5. **Strength (later):** play matches against an opponent such as fixed-depth Stockfish or Maia, using a tool like `fastchess` or `cutechess-cli`.
+2. **Move generation:** [tests/perft.sh](stockfish/tests/perft.sh) checks move generation, which is not changed. It should pass unchanged.
+3. **Assertions:** build with `debug=yes` and run `bench` with the model enabled. Stockfish's assertions check, among other things, search windows, depths, and the mate/stalemate condition above.
+4. **Reproducibility:** [tests/reprosearch.sh](stockfish/tests/reprosearch.sh) checks that a search repeated after `ucinewgame` searches exactly the same number of nodes. With the model enabled, this only passes if `ucinewgame` resets all opponent-model state: its hash table, histories and filter cache. The script needs `expect`, which is not installed here, so it is rewritten as a small script that drives the engine directly.
+5. **Filter behavior (manual):** run `opponentmoves` on chosen positions and check the kept and discarded moves by hand. The positions include one with a single hard-to-find good move, positions in check, positions with a forced mate for either side, and a position with only one legal move.
+6. **Loading in a GUI (manual):** load the engine in a chess GUI, check that the three options appear and can be changed, and play a few games with the model enabled.
+7. **Speed:** compare nodes per second and time to reach a given depth with the model enabled and disabled, at several opponent depths.
+8. **Strength (later):** play matches against an opponent such as fixed-depth Stockfish or Maia, using a tool like `fastchess` or `cutechess-cli`.
 
 ## 9. Implementation Steps
 Each step is a separate commit that builds and passes the checks listed for it.
 
-1. **Plumbing:** UCI options, `from_cp`, the opponent-model hash table and shared histories, `SharedState` fields, and the `OpponentModel` class with its worker but no search yet. `bench` still gives 2497913.
+1. **Plumbing:** the three UCI options, `from_cp`, the opponent-model hash table and shared histories, `SharedState` fields, and the `OpponentModel` class with its worker but no search yet. `bench` still gives 2497913.
 2. **Low-depth search:** the root loop, the filter cache and the `opponentmoves` command. Check the filter on chosen positions.
 3. **Search integration:** the hook and skip in `search()`, node counting, and clearing the main hash table when the model changes. Check `bench` with the model disabled, then a debug build with it enabled.
 4. **Measurement and documentation:** speed measurements, and README updates with the results and any changes made along the way.
 
 ## Possible Later Changes
-- A UCI option for the opponent-model hash table size.
 - Skipping the low-depth search when the remaining depth is low, if it turns out to be too slow near the leaves.
 - Restricting the opponent's moves in ProbCut and quiescence search.
 - Iterative deepening in the low-depth search, if its move ordering turns out to matter.
