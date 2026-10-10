@@ -853,6 +853,14 @@ bool Search::UsesRootHalving() const {
   return root_halving_.initialized && !root_halving_.initial.empty();
 }
 
+float Search::RootHalvingScore(const EdgeAndNode& edge) const {
+  const float q = edge.GetQ(0.0f, GetDrawScore(/* is_odd_depth= */ false));
+  const auto m_evaluator = backend_attributes_.has_mlh
+                               ? MEvaluator(params_, root_node_)
+                               : MEvaluator();
+  return q + m_evaluator.GetMUtility(edge, q);
+}
+
 std::optional<Move> Search::RootHalvingBest() const {
   const auto& halving = root_halving_;
   if (!UsesRootHalving() || !halving.leader) return std::nullopt;
@@ -871,11 +879,9 @@ std::optional<Move> Search::RootHalvingBest() const {
     most = std::max(most, edges[index].GetN());
   }
   if (fewest == 0 || most > fewest * 1.05) return halving.leader;
-  const float draw_score = GetDrawScore(/* is_odd_depth= */ false);
   const int best = *std::max_element(
       halving.candidates.begin(), halving.candidates.end(), [&](int a, int b) {
-        return edges[a].GetQ(0.0f, draw_score) <
-               edges[b].GetQ(0.0f, draw_score);
+        return RootHalvingScore(edges[a]) < RootHalvingScore(edges[b]);
       });
   return edges[best].GetMove();
 }
@@ -933,7 +939,6 @@ void Search::UpdateRootHalving() {
 
   std::vector<EdgeAndNode> edges;
   for (const auto& edge : root_node_->Edges()) edges.push_back(edge);
-  const float draw_score = GetDrawScore(/* is_odd_depth= */ false);
   // Each pass ends a round, if every candidate has the visits it needs.
   while (std::all_of(halving.candidates.begin(), halving.candidates.end(),
                      [&](int index) {
@@ -941,8 +946,8 @@ void Search::UpdateRootHalving() {
                      })) {
     std::stable_sort(halving.candidates.begin(), halving.candidates.end(),
                      [&](int a, int b) {
-                       return edges[a].GetQ(0.0f, draw_score) >
-                              edges[b].GetQ(0.0f, draw_score);
+                       return RootHalvingScore(edges[a]) >
+                              RootHalvingScore(edges[b]);
                      });
     halving.leader = edges[halving.candidates.front()].GetMove();
     // A run's first round drops the candidates that fall well short. The next
@@ -2495,13 +2500,12 @@ void SearchWorker::DoBackupUpdateSingleNode(
   }
 
   // For the first visit to a terminal, maybe update parent bounds too.
-  // Opponent modeling: proven results are propagated as minimax (one winning
-  // child makes the parent a win), which does not hold at opponent nodes, where
-  // the opponent plays its winning move only with some probability. So they
-  // are not propagated while the opponent model is on.
-  auto update_parent_bounds = params_.GetStickyEndgames() &&
-                              !search_->opponent_backend_ &&
-                              node->IsTerminal() && !node->GetN();
+  // Opponent modeling: at opponent nodes the bounds are set differently, see
+  // MaybeSetBounds. The depth counts the root as 1, so the opponent is to move
+  // at even depths.
+  auto update_parent_bounds =
+      params_.GetStickyEndgames() && node->IsTerminal() && !node->GetN();
+  int parent_depth = node_to_process.depth - 1;
 
   // Backup V value up to a root. After 1 visit, V = Q.
   float v = node_to_process.eval->q;
@@ -2543,9 +2547,13 @@ void SearchWorker::DoBackupUpdateSingleNode(
     // If parent already is terminal further adjustment is not required.
     if (p->IsTerminal()) n_to_fix = 0;
     // Try setting parent bounds except the root or those already terminal.
+    const bool opponent_node =
+        search_->opponent_backend_ != nullptr && parent_depth % 2 == 0;
+    --parent_depth;
     update_parent_bounds =
         update_parent_bounds && p != search_->root_node_ && !p->IsTerminal() &&
-        MaybeSetBounds(p, m, &n_to_fix, &v_delta, &d_delta, &m_delta);
+        MaybeSetBounds(p, opponent_node, m, &n_to_fix, &v_delta, &d_delta,
+                       &m_delta);
 
     // Q will be flipped for opponent.
     v = -v;
@@ -2573,11 +2581,52 @@ void SearchWorker::DoBackupUpdateSingleNode(
   search_->max_depth_ = std::max(search_->max_depth_, node_to_process.depth);
 }
 
-bool SearchWorker::MaybeSetBounds(Node* p, float m, int* n_to_fix,
-                                  float* v_delta, float* d_delta,
-                                  float* m_delta) const {
+bool SearchWorker::MaybeSetBounds(Node* p, bool opponent_node, float m,
+                                  int* n_to_fix, float* v_delta,
+                                  float* d_delta, float* m_delta) const {
   auto losing_m = 0.0f;
   auto prefer_tb = false;
+
+  // Opponent modeling: the opponent's move is drawn from the opponent model,
+  // so the node's value is an average over its moves, which lies between the
+  // worst and the best of them. So its bounds run from the lowest lower bound
+  // of its moves to the highest upper bound, and it is proven only when all
+  // its moves are proven to the same result: the opponent may play any of
+  // them. A proven result's moves left are averaged by the probabilities too.
+  if (opponent_node) {
+    auto lower = GameResult::WHITE_WON;
+    auto upper = GameResult::BLACK_WON;
+    float weighted_m = 0.0f;
+    float total_p = 0.0f;
+    for (const auto& edge : p->Edges()) {
+      const auto [edge_lower, edge_upper] = edge.GetBounds();
+      lower = std::min(edge_lower, lower);
+      upper = std::max(edge_upper, upper);
+      prefer_tb = prefer_tb || edge.IsTbTerminal();
+      if (edge_lower == edge_upper) {
+        weighted_m += edge.GetP() * edge.GetM(0.0f);
+        total_p += edge.GetP();
+      }
+    }
+    if (lower == GameResult::BLACK_WON && upper == GameResult::WHITE_WON) {
+      return false;
+    } else if (lower == upper) {
+      *n_to_fix = p->GetN();
+      assert(*n_to_fix > 0);
+      float cur_v = p->GetWL();
+      float cur_d = p->GetD();
+      float cur_m = p->GetM();
+      p->MakeTerminal(
+          -upper, (total_p > 0.0f ? weighted_m / total_p : m) + 1.0f,
+          prefer_tb ? Node::Terminal::Tablebase : Node::Terminal::EndOfGame);
+      *v_delta = -(p->GetWL() - cur_v);
+      *d_delta = p->GetD() - cur_d;
+      *m_delta = p->GetM() - cur_m;
+    } else {
+      p->SetBounds(-upper, -lower);
+    }
+    return true;
+  }
 
   // Determine the maximum (lower, upper) bounds across all children.
   // (-1,-1) Loss (initial and lowest bounds)

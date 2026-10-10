@@ -218,6 +218,12 @@ class Search {
   bool UsesRootHalving() const REQUIRES(nodes_mutex_);
   // The best root move by sequential halving, if it has ranked the moves yet.
   std::optional<Move> RootHalvingBest() const REQUIRES(nodes_mutex_);
+  // What sequential halving ranks root moves by: the value, plus the bonus
+  // for shorter wins (and longer losses) that the search's own move choice
+  // adds, which is what decides between moves in a won ending, where every
+  // move is worth about the same.
+  float RootHalvingScore(const EdgeAndNode& edge) const
+      REQUIRES(nodes_mutex_);
   // Sets the candidates up on the first call, and ends every round whose
   // candidates all have the target visits.
   void UpdateRootHalving() REQUIRES(nodes_mutex_);
@@ -451,7 +457,11 @@ class SearchWorker {
   int PrefetchIntoCache(Node* node, int budget, bool is_odd_depth);
   void DoBackupUpdateSingleNode(const NodeToProcess& node_to_process);
   // Returns whether a node's bounds were set based on its children.
-  bool MaybeSetBounds(Node* p, float m, int* n_to_fix, float* v_delta,
+  // At an opponent node (opponent_node), the opponent's move is not chosen
+  // but drawn from the opponent model, so the node is proven only when all
+  // its moves lead to the same proven result.
+  bool MaybeSetBounds(Node* p, bool opponent_node, float m, int* n_to_fix,
+                      float* v_delta,
                       float* d_delta, float* m_delta) const;
   void PickNodesToExtend(int collision_limit);
   void PickNodesToExtendTask(Node* starting_point, int collision_limit,
