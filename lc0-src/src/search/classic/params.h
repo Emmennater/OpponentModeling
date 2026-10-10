@@ -301,17 +301,20 @@ class SearchParams : public BaseSearchParams {
   int GetSolidTreeThreshold() const { return kSolidTreeThreshold; }
   int GetOpponentRootCandidates() const { return kOpponentRootCandidates; }
   float GetOpponentMinProbability() const { return kOpponentMinProbability; }
+  float GetOpponentBestLean() const { return kOpponentBestLean; }
 
   // Search parameter IDs.
   static const OptionId kMaxPrefetchBatchId;
   static const OptionId kSolidTreeThresholdId;
   static const OptionId kOpponentRootCandidatesId;
   static const OptionId kOpponentMinProbabilityId;
+  static const OptionId kOpponentBestLeanId;
 
  private:
   const int kSolidTreeThreshold;
   const int kOpponentRootCandidates;
   const float kOpponentMinProbability;
+  const float kOpponentBestLean;
 };
 }  // namespace classic
 }  // namespace lczero

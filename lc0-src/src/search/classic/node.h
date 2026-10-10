@@ -211,6 +211,8 @@ class Node {
   void FinalizeScoreUpdate(float v, float d, float m, int multivisit);
   // Like FinalizeScoreUpdate, but it updates n existing visits by delta amount.
   void AdjustForTerminal(float v, float d, float m, int multivisit);
+  // Opponent modeling: replaces Q's win-loss part (see OpponentBestLean).
+  void SetWL(double wl) { wl_ = wl; }
   // Revert visits to a node which ended in a now reverted terminal.
   void RevertTerminalVisits(float v, float d, float m, int multivisit);
   // When search decides to treat one visit as several (in case of collisions

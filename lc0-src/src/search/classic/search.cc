@@ -2519,6 +2519,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
   auto update_parent_bounds =
       params_.GetStickyEndgames() && node->IsTerminal() && !node->GetN();
   int parent_depth = node_to_process.depth - 1;
+  const float best_lean = search_->opponent_backend_
+                              ? params_.GetOpponentBestLean()
+                              : 0.0f;
 
   // Backup V value up to a root. After 1 visit, V = Q.
   float v = node_to_process.eval->q;
@@ -2543,6 +2546,34 @@ void SearchWorker::DoBackupUpdateSingleNode(
     n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
+    }
+    // Opponent modeling: the node's value is recomputed from its children's,
+    // and where this engine is to move it leans toward its most searched
+    // move (see OpponentBestLean). n is at parent_depth + 1, and this engine
+    // is to move at odd depths.
+    if (best_lean > 0.0f && !n->IsTerminal()) {
+      double weighted_wl = 0.0;
+      uint32_t visits = 0;
+      uint32_t most_visits = 0;
+      double most_visited_wl = 0.0;
+      for (const Node* child : n->VisitedNodes()) {
+        const uint32_t child_n = child->GetN();
+        weighted_wl += static_cast<double>(child_n) * child->GetWL();
+        visits += child_n;
+        if (child_n > most_visits) {
+          most_visits = child_n;
+          most_visited_wl = child->GetWL();
+        }
+      }
+      if (visits > 0) {
+        // The children's values are for the side to move at n, n's for the
+        // other side.
+        double wl = weighted_wl / visits;
+        if ((parent_depth + 1) % 2 == 1) {
+          wl += best_lean * (most_visited_wl - wl);
+        }
+        n->SetWL(-wl);
+      }
     }
     if (n->GetN() >= solid_threshold) {
       if (n->MakeSolid() && n == search_->root_node_) {

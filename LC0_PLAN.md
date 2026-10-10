@@ -61,6 +61,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentModelRating` and `OpponentModelOwnRating` (added with Maia-3, see below): the modeled opponent's rating, and the rating of the side the engine plays, both 1300 by default. Maia-3 takes both as inputs. Maia-1 networks ignore them, since each is trained for one rating.
 - `OpponentRootCandidates` (added later, see "Choosing the move at the root"): the number of root moves compared by sequential halving, 8 by default. 0 or 1 uses Lc0's usual rule.
 - `OpponentTreeReuse` (added later, see "Choosing the move at the root"): whether a search keeps the previous search's tree, off by default.
+- `OpponentBestLean` (added later, see "Sharp moves need more search"): how far the value of a position where the engine is to move leans from the average of the moves searched there toward the most searched move's value, 0 by default.
 - `OpponentMinProbability` (added later, see "Sharp moves need more search"): opponent moves the model gives less than this probability are taken as never played, as in the Stockfish version's threshold. 0 by default, which keeps every move.
 
 ### What stays the same
@@ -168,6 +169,32 @@ The root cannot compare moves beyond the visits it has.
 - **A probability cutoff at opponent nodes** (`OpponentMinProbability` 0.02 or 0.05): −0.049, −0.020 and −0.007 with 2%, and −0.053, −0.018 and −0.005 with 5%, 2 to 4 moves deeper.
 
 Root searches at 100k and 300k still chose `5.Nxd4` with each. Both settings deepen both lines alike. The sharp line's value comes from many separate places where the opponent may go wrong, and finding them takes breadth, which grows with the size of the search.
+
+**Leaning toward our best move works.** In Lc0, a position's value is the average of every result passed up through it. Where the engine is to move, that average includes the visits the search spent trying weaker moves, so it lags behind the best move. It lags most in sharp positions, where the move that punishes a mistake is much better than the rest. Normal Lc0 has the same lag on both sides, and the two partly cancel; here the opponent's side is a deliberate average, so only ours drags the value down.
+
+With `OpponentBestLean` above 0, each position on the path a value takes up the tree recomputes its value from its children:
+- **Opponent positions:** the visit-weighted average of their replies, which is the opponent model's expectation, since the visits follow its probabilities.
+- **Our positions:** that average, moved by the given fraction toward the value of the most searched move.
+
+The most searched move is used rather than the best-valued one, because a value from a few visits is noisy, and taking the best of noisy values is too optimistic.
+
+The gap `5.Nd5` − `5.Nxd4`, at about 9k, 34k and 129k visits each:
+
+| `OpponentBestLean` | ~9k | ~34k | ~129k |
+|---|---|---|---|
+| 0.0001 (recomputing only) | −0.047 | −0.021 | −0.010 |
+| 0.5 | −0.021 | +0.001 | +0.004 |
+| 1.0 | +0.004 | +0.012 | +0.011 |
+
+Recomputing on its own changes nothing; the lean does. At 0.5, `5.Nd5` overtakes at about 34k visits instead of about 130k. At 1.0 it leads at every length, and the gap barely changes between 34k and 129k.
+
+Root searches at 1.0:
+- **Choices:** `5.Nd5` at 100k nodes; 0.5 gives a tie there, 0.797 against 0.797. Both settings keep `1.e4` from the start position and `6.e4` and `8.Bxa6` in the test game.
+- **Mates:** king and queen against king in 8, 8 and 8 moves, where the fastest were 8, 8 and 7.
+
+The costs:
+- **Values run higher:** for example 0.70 from the start position against 0.53, and about 0.99 in won positions, where they leave less room to tell moves apart. In the game-report position, both settings preferred `19...Rd3`, a trap like `19...Rd5`: Stockfish gives it +0.12 after `20.Bf4`, against +6.33 for `19...Re7`.
+- **Speed:** the recomputation iterates over each position's children, which costs about 25%.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
