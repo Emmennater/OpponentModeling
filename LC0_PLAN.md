@@ -156,7 +156,9 @@ After `1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.d4 exd4`, given equal visits with `searchmo
 | 1M | 230k / 295k | `5.Nd5` |
 | 2M | 459k / 599k | `5.Nd5` |
 
-The root cannot compare moves beyond the visits it has. A lasting fix would score the leaves where the opponent is to move with the mistakes still to come, so that sharp positions score higher without deep search.
+The root cannot compare moves beyond the visits it has.
+
+**Tried and not kept: evaluating the opponent's replies at new nodes.** One explanation was that a new opponent node is valued as if the opponent will defend perfectly, until its less likely replies get visits. So for each new opponent node, the main network also evaluated the opponent's likely replies, up to 6 of them or 90% of the probability. The node was then valued by their evaluations, weighted by the opponent model's probabilities. Values rose by about 0.02 for both moves, but the gap between them changed with search length just as before (−0.033, −0.011 and +0.000 at about 9k, 34k and 129k visits each, against −0.038, −0.011 and +0.000). It cost 22% of the speed, so it was dropped. The cause is not the opponent's next move at the leaves. A remaining suspect is our own nodes: their value is the average of all the moves the search tried there, not the best of them, and the gap between the best move and the rest is larger in sharp positions.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
