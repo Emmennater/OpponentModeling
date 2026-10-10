@@ -543,6 +543,13 @@ const OptionId SearchParams::kOpponentRootCandidatesId{
     "model a move's value tends to rise as it is searched deeper, so the usual "
     "rule, which gives most visits to the move that looks best, favors "
     "whichever move took the lead first. 0 or 1 turns this off."};
+const OptionId SearchParams::kOpponentMinProbabilityId{
+    "opponent-min-probability", "OpponentMinProbability",
+    "With an opponent model, the opponent's moves the model gives less than "
+    "this probability are taken as never played, and the others' "
+    "probabilities scaled up to make up for them. The search then spends no "
+    "visits on them, and goes deeper on the likely moves. The most likely "
+    "move is always kept. 0 keeps every move."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -641,6 +648,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kMaxPrefetchBatchId, 0, 1024) = DEFAULT_MAX_PREFETCH;
   options->Add<IntOption>(kSolidTreeThresholdId, 1, 2000000000) = 100;
   options->Add<IntOption>(kOpponentRootCandidatesId, 0, 64) = 8;
+  options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.0f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
@@ -733,6 +741,7 @@ BaseSearchParams::BaseSearchParams(const OptionsDict& options)
 SearchParams::SearchParams(const OptionsDict& options)
     : BaseSearchParams(options),
       kSolidTreeThreshold(options.Get<int>(kSolidTreeThresholdId)),
-      kOpponentRootCandidates(options.Get<int>(kOpponentRootCandidatesId)) {}
+      kOpponentRootCandidates(options.Get<int>(kOpponentRootCandidatesId)),
+      kOpponentMinProbability(options.Get<float>(kOpponentMinProbabilityId)) {}
 }  // namespace classic
 }  // namespace lczero

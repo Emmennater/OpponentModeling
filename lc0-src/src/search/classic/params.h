@@ -300,15 +300,18 @@ class SearchParams : public BaseSearchParams {
   }
   int GetSolidTreeThreshold() const { return kSolidTreeThreshold; }
   int GetOpponentRootCandidates() const { return kOpponentRootCandidates; }
+  float GetOpponentMinProbability() const { return kOpponentMinProbability; }
 
   // Search parameter IDs.
   static const OptionId kMaxPrefetchBatchId;
   static const OptionId kSolidTreeThresholdId;
   static const OptionId kOpponentRootCandidatesId;
+  static const OptionId kOpponentMinProbabilityId;
 
  private:
   const int kSolidTreeThreshold;
   const int kOpponentRootCandidates;
+  const float kOpponentMinProbability;
 };
 }  // namespace classic
 }  // namespace lczero

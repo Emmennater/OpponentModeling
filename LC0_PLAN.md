@@ -61,6 +61,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentModelRating` and `OpponentModelOwnRating` (added with Maia-3, see below): the modeled opponent's rating, and the rating of the side the engine plays, both 1300 by default. Maia-3 takes both as inputs. Maia-1 networks ignore them, since each is trained for one rating.
 - `OpponentRootCandidates` (added later, see "Choosing the move at the root"): the number of root moves compared by sequential halving, 8 by default. 0 or 1 uses Lc0's usual rule.
 - `OpponentTreeReuse` (added later, see "Choosing the move at the root"): whether a search keeps the previous search's tree, off by default.
+- `OpponentMinProbability` (added later, see "Sharp moves need more search"): opponent moves the model gives less than this probability are taken as never played, as in the Stockfish version's threshold. 0 by default, which keeps every move.
 
 ### What stays the same
 - Our nodes, including the root: PUCT with the main network, as usual.
@@ -161,6 +162,12 @@ After `1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.d4 exd4`, given equal visits with `searchmo
 The root cannot compare moves beyond the visits it has.
 
 **Tried and not kept: evaluating the opponent's replies at new nodes.** One explanation was that a new opponent node is valued as if the opponent will defend perfectly, until its less likely replies get visits. So for each new opponent node, the main network also evaluated the opponent's likely replies, up to 6 of them or 90% of the probability. The node was then valued by their evaluations, weighted by the opponent model's probabilities. Values rose by about 0.02 for both moves, but the gap between them changed with search length just as before (−0.033, −0.011 and +0.000 at about 9k, 34k and 129k visits each, against −0.038, −0.011 and +0.000). It cost 22% of the speed, so it was dropped. The cause is not the opponent's next move at the leaves. A remaining suspect is our own nodes: their value is the average of all the moves the search tried there, not the best of them, and the gap between the best move and the rest is larger in sharp positions.
+
+**Tried: deeper search.** Two settings make the search deeper, and neither changed the choice. Each was measured as the gap, `5.Nd5` minus `5.Nxd4`, at about 9k, 34k and 129k visits each; the default gave −0.046, −0.016 and −0.006 in the same run.
+- **Less exploration of our own moves** (`CPuct` 0.6 instead of 1.745): −0.024, −0.011 and −0.000. Values rose by about 0.08, and the maximum depth at 300k nodes from 29 to 37.
+- **A probability cutoff at opponent nodes** (`OpponentMinProbability` 0.02 or 0.05): −0.049, −0.020 and −0.007 with 2%, and −0.053, −0.018 and −0.005 with 5%, 2 to 4 moves deeper.
+
+Root searches at 100k and 300k still chose `5.Nxd4` with each. Both settings deepen both lines alike. The sharp line's value comes from many separate places where the opponent may go wrong, and finding them takes breadth, which grows with the size of the search.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

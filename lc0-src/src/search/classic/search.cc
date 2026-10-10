@@ -2459,9 +2459,22 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
   }
   // Opponent modeling: at opponent nodes, the move probabilities come from the
   // opponent model. The value still comes from the main network.
-  const std::vector<float>& policy = node_to_process->opponent_queried
-                                         ? node_to_process->opponent_eval->p
-                                         : node_to_process->eval->p;
+  std::vector<float>& policy = node_to_process->opponent_queried
+                                   ? node_to_process->opponent_eval->p
+                                   : node_to_process->eval->p;
+  // Moves below OpponentMinProbability are taken as never played. A move
+  // with probability 0 gets no visits at an opponent node.
+  const float min_probability = params_.GetOpponentMinProbability();
+  if (node_to_process->opponent_queried && min_probability > 0.0f &&
+      !policy.empty()) {
+    const float top = *std::max_element(policy.begin(), policy.end());
+    float kept = 0.0f;
+    for (float& p : policy) {
+      if (p < min_probability && p < top) p = 0.0f;
+      kept += p;
+    }
+    for (float& p : policy) p /= kept;
+  }
   for (size_t p_idx = 0; auto& edge : node->Edges()) {
     edge.edge()->SetP(policy[p_idx++]);
   }
@@ -2596,9 +2609,14 @@ bool SearchWorker::MaybeSetBounds(Node* p, bool opponent_node, float m,
   if (opponent_node) {
     auto lower = GameResult::WHITE_WON;
     auto upper = GameResult::BLACK_WON;
+    // Before any move is counted, lower > upper, which is no result: then
+    // the loop below has found nothing to go by.
     float weighted_m = 0.0f;
     float total_p = 0.0f;
     for (const auto& edge : p->Edges()) {
+      // Moves the opponent never plays (see OpponentMinProbability) get no
+      // visits, and do not count.
+      if (edge.GetP() == 0.0f) continue;
       const auto [edge_lower, edge_upper] = edge.GetBounds();
       lower = std::min(edge_lower, lower);
       upper = std::max(edge_upper, upper);
@@ -2608,7 +2626,8 @@ bool SearchWorker::MaybeSetBounds(Node* p, bool opponent_node, float m,
         total_p += edge.GetP();
       }
     }
-    if (lower == GameResult::BLACK_WON && upper == GameResult::WHITE_WON) {
+    if (lower > upper ||
+        (lower == GameResult::BLACK_WON && upper == GameResult::WHITE_WON)) {
       return false;
     } else if (lower == upper) {
       *n_to_fix = p->GetN();
