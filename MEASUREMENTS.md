@@ -138,3 +138,16 @@ Probability on moves losing at least L centipawns (depth 10), against how often 
 - **The earlier opening sample was different.** There, raw Maia-3 overestimated blunders by about 20%. That file's filtering differed: each game was assigned to a band by the players' average rating, and its time controls are unknown. Its opening blunder rate was also lower (12.9% at L = 100 against 14.5%).
 
 So Lc0 should use Maia-3 as it is, with the default `OpponentModelTemperature` of 1.0 and no calibration.
+
+### Tactics
+On the same full-game positions, the move ahead of the 2nd-best by a clear margin at depth 10, for example a tactical shot, against how often real players found it and the probability Maia3-23M gave it:
+
+| Best move's lead over the 2nd-best | Positions | Players found it | Maia-3's probability |
+|---|---|---|---|
+| 0–50 cp | 5,123 | 25.7% | 24.6% |
+| 50–100 cp | 880 | 38.5% | 37.3% |
+| 100–200 cp | 609 | 48.4% | 48.5% |
+| 200–300 cp | 208 | 53.8% | 56.0% |
+| 300–500 cp | 216 | 61.6% | 64.3% |
+
+Maia-3 finds clear tactical shots about as often as players rated 1200–1399 do. Even so, the engine relies on the opponent missing them, which is what `OpponentEngineMix` in [LC0_PLAN.md](LC0_PLAN.md) is for.

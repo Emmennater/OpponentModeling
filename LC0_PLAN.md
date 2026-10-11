@@ -63,6 +63,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentTreeReuse` (added later, see "Choosing the move at the root"): whether a search keeps the previous search's tree, off by default.
 - `OpponentBestLean` (added later, see "Sharp moves need more search"): how far the value of a position where the engine is to move leans from the average of the moves searched there toward the most searched move's value, 0 by default.
 - `OpponentDiscount` (added later, see "Sharp moves need more search"): how much less a result counts for each half-move until the game ends, 1 (off) by default.
+- `OpponentEngineMix` (added later, see "Sharp moves need more search"): the share of the main network's move probabilities mixed into the opponent model's, 0 by default.
 - `OpponentMinProbability` (added later, see "Sharp moves need more search"): opponent moves the model gives less than this probability are taken as never played, as in the Stockfish version's threshold. 0 by default, which keeps every move.
 
 ### What stays the same
@@ -223,6 +224,19 @@ Root searches with `OpponentBestLean` 1.0:
 - **Mates:** king and queen against king in 6, 8 and 9 moves with 0.99.
 
 The discounted values are on a different scale: 0.3 to 0.6 is already a large advantage.
+
+**A tactically sharper opponent.** Maia-3 finds clear tactical shots about as often as real 1200-1399 players (see "Tactics" in [MEASUREMENTS.md](MEASUREMENTS.md)), but the engine still leaned on the opponent missing them. With `OpponentEngineMix` above 0, that share of the main network's move probabilities, which a strong player's instincts would give, is mixed into Maia's at every opponent node. That costs nothing, since the main network is evaluated at those nodes anyway. It makes the modeled player stronger than measured, by choice.
+
+Root searches, 300k nodes (100k in the Belgrade position):
+
+| Position | Mix 0.25, discount 0.995, lean 1.0 | Mix 0.5, discount 0.995, lean 1.0 | Mix 0.25 alone |
+|---|---|---|---|
+| Start | `1.e4` 0.319, `1.Nc3` 0.309, `1.d4` 0.264 | `1.e4` 0.312, `1.d4` 0.265 | `1.e4` 0.486, `1.d4` 0.445 |
+| Belgrade | `5.Nd5` 0.514, `5.Nxd4` 0.491 | `5.Nd5` 0.465, `5.Nxd4` 0.452 | `5.Nxd4` 0.661, `5.Nd5` 0.647 |
+| Game report | `19...Rd3` | `19...Rd5` | `19...Rd5` |
+| Test game | `6.e4`, `8.Bxa6` | `6.e4`, `8.Bxa6` | `6.e4`, `8.Bxa6` |
+
+From the start position, `1.e4` now wins with every setting, by 0.04 to 0.06 over `1.d4`. Without the mix, `1.d4` and `1.e4` had been within 0.01. In the game-report position, the traps `19...Rd3` and `19...Rd5` still beat the safe `19...Re7`: a sharper opponent finds `20.Bf4` more often, but the engine still expects to win most of the positions after it.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

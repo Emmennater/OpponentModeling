@@ -303,6 +303,7 @@ class SearchParams : public BaseSearchParams {
   float GetOpponentMinProbability() const { return kOpponentMinProbability; }
   float GetOpponentBestLean() const { return kOpponentBestLean; }
   float GetOpponentDiscount() const { return kOpponentDiscount; }
+  float GetOpponentEngineMix() const { return kOpponentEngineMix; }
 
   // Search parameter IDs.
   static const OptionId kMaxPrefetchBatchId;
@@ -311,6 +312,7 @@ class SearchParams : public BaseSearchParams {
   static const OptionId kOpponentMinProbabilityId;
   static const OptionId kOpponentBestLeanId;
   static const OptionId kOpponentDiscountId;
+  static const OptionId kOpponentEngineMixId;
 
  private:
   const int kSolidTreeThreshold;
@@ -318,6 +320,7 @@ class SearchParams : public BaseSearchParams {
   const float kOpponentMinProbability;
   const float kOpponentBestLean;
   const float kOpponentDiscount;
+  const float kOpponentEngineMix;
 };
 }  // namespace classic
 }  // namespace lczero

@@ -564,6 +564,12 @@ const OptionId SearchParams::kOpponentDiscountId{
     "slow one, and a late loss less than an early one. The game's end is "
     "estimated with the network's moves-left head, so a line is not "
     "discounted for being searched deeper. 1 turns this off."};
+const OptionId SearchParams::kOpponentEngineMixId{
+    "opponent-engine-mix", "OpponentEngineMix",
+    "With an opponent model, the share of the main network's move "
+    "probabilities mixed into the opponent model's, which makes the modeled "
+    "opponent stronger, tactics included: 0 is the opponent model alone, 1 "
+    "the main network alone."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -665,6 +671,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.0f;
   options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
+  options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
@@ -760,6 +767,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentRootCandidates(options.Get<int>(kOpponentRootCandidatesId)),
       kOpponentMinProbability(options.Get<float>(kOpponentMinProbabilityId)),
       kOpponentBestLean(options.Get<float>(kOpponentBestLeanId)),
-      kOpponentDiscount(options.Get<float>(kOpponentDiscountId)) {}
+      kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
+      kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)) {}
 }  // namespace classic
 }  // namespace lczero

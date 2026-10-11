@@ -2470,6 +2470,15 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
   std::vector<float>& policy = node_to_process->opponent_queried
                                    ? node_to_process->opponent_eval->p
                                    : node_to_process->eval->p;
+  // A share of the main network's probabilities, for the same moves in the
+  // same order, makes the modeled opponent stronger (OpponentEngineMix).
+  const float engine_mix = params_.GetOpponentEngineMix();
+  if (node_to_process->opponent_queried && engine_mix > 0.0f) {
+    const std::vector<float>& engine_policy = node_to_process->eval->p;
+    for (size_t i = 0; i < policy.size(); ++i) {
+      policy[i] += engine_mix * (engine_policy[i] - policy[i]);
+    }
+  }
   // Moves below OpponentMinProbability are taken as never played. A move
   // with probability 0 gets no visits at an opponent node.
   const float min_probability = params_.GetOpponentMinProbability();
