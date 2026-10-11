@@ -780,6 +780,21 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
     SendUciInfo();
     EnsureBestMoveKnown();
     SendMovesStats();
+    if (opponent_backend_ && params_.GetOpponentDeepTactics() > 0.0f) {
+      const int done = deep_done_.load(std::memory_order_relaxed);
+      std::size_t waiting;
+      {
+        std::lock_guard<std::mutex> deep_lock(deep_mutex_);
+        waiting = deep_queue_.size();
+      }
+      std::vector<ThinkingInfo> infos(1);
+      infos[0].comment =
+          "deep tactics: " + std::to_string(done) + " positions, " +
+          std::to_string(done ? deep_ms_.load(std::memory_order_relaxed) / done
+                              : 0) +
+          " ms each, " + std::to_string(waiting) + " still queued";
+      uci_responder_->OutputThinkingInfo(&infos);
+    }
     BestMoveInfo info(final_bestmove_, final_pondermove_);
     uci_responder_->OutputBestMove(&info);
     ExportTree();
@@ -1208,6 +1223,12 @@ void Search::StartThreads(size_t how_many) {
   // First thread is a watchdog thread.
   if (threads_.size() == 0) {
     threads_.emplace_back([this]() { WatchdogThread(); });
+    // Opponent modeling: the closer look's threads (see OpponentDeepTactics).
+    if (opponent_backend_ && params_.GetOpponentDeepTactics() > 0.0f) {
+      for (int i = 0; i < params_.GetOpponentDeepTacticsThreads(); ++i) {
+        threads_.emplace_back([this]() { DeepTacticsThread(); });
+      }
+    }
   }
   // Start working threads.
   for (size_t i = 0; i < how_many; i++) {
@@ -1221,6 +1242,94 @@ void Search::StartThreads(size_t how_many) {
                  std::chrono::steady_clock::now() - start_time_)
                  .count()
           << "ms already passed.";
+}
+
+void Search::QueueDeepTactics(const Node* node) REQUIRES(nodes_mutex_) {
+  DeepTacticsRequest request;
+  for (const Node* n = node; n != root_node_; n = n->GetParent()) {
+    request.path.push_back(n->Index());
+  }
+  std::reverse(request.path.begin(), request.path.end());
+  const PositionHistory history = GetPositionHistoryAtNode(node);
+  request.fen = PositionToFen(history.Last());
+  const bool black_to_move = history.IsBlackToMove();
+  for (const auto& edge : node->Edges()) {
+    Move move = edge.GetMove();
+    if (black_to_move) move.Flip();
+    request.moves.push_back(
+        {move.from().as_idx(), move.to().as_idx(),
+         move.is_promotion() ? move.promotion().ToString()[0] : '\0'});
+  }
+  {
+    std::lock_guard<std::mutex> lock(deep_mutex_);
+    deep_queue_.push_back(std::move(request));
+  }
+  deep_cv_.notify_one();
+}
+
+void Search::DeepTacticsThread() {
+  const int depth = params_.GetOpponentDeepTacticsDepth();
+  const float max_rate = params_.GetOpponentDeepTactics();
+  constexpr float kLossScaleCp = 300.0f;
+  while (!stop_.load(std::memory_order_acquire)) {
+    DeepTacticsRequest request;
+    {
+      std::unique_lock<std::mutex> lock(deep_mutex_);
+      deep_cv_.wait_for(lock, std::chrono::milliseconds(20), [this]() {
+        return !deep_queue_.empty() || stop_.load(std::memory_order_acquire);
+      });
+      if (deep_queue_.empty()) continue;
+      request = std::move(deep_queue_.front());
+      deep_queue_.pop_front();
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const std::vector<int> scores =
+        ScoreOpponentMovesDeep(request.fen, request.moves, depth, &stop_);
+    if (scores.empty()) break;  // Stopped.
+
+    SharedMutex::Lock lock(nodes_mutex_);
+    Node* node = root_node_;
+    for (const uint16_t index : request.path) {
+      Node* child = nullptr;
+      int i = 0;
+      for (const auto& edge : node->Edges()) {
+        if (i++ == index) {
+          child = edge.node();
+          break;
+        }
+      }
+      node = child;
+      if (!node) break;
+    }
+    if (!node || node->GetNumEdges() != scores.size()) continue;
+    // As with OpponentTactics, up to max_rate of each move's probability goes
+    // to the best-scoring move, more the more the move loses.
+    std::vector<float> policy;
+    for (const auto& edge : node->Edges()) policy.push_back(edge.GetP());
+    size_t best = 0;
+    for (size_t i = 1; i < policy.size(); ++i) {
+      if (scores[i] > scores[best] ||
+          (scores[i] == scores[best] && policy[i] > policy[best])) {
+        best = i;
+      }
+    }
+    float caught = 0.0f;
+    for (size_t i = 0; i < policy.size(); ++i) {
+      const float loss = static_cast<float>(scores[best] - scores[i]);
+      const float rate = max_rate * (1.0f - std::exp(-loss / kLossScaleCp));
+      caught += policy[i] * rate;
+      policy[i] *= 1.0f - rate;
+    }
+    policy[best] += caught;
+    for (size_t i = 0; auto& edge : node->Edges()) {
+      edge.edge()->SetP(policy[i++]);
+    }
+    deep_done_.fetch_add(1, std::memory_order_relaxed);
+    deep_ms_.fetch_add(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count(),
+                       std::memory_order_relaxed);
+  }
 }
 
 void Search::RunBlocking(size_t threads) {
@@ -2754,6 +2863,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
                                   : 0.0f;
   const bool cautious = caution > 0.0f || caution_ahead > 0.0f;
   const bool sound_caution = cautious && params_.GetOpponentSoundCaution();
+  const bool deep_tactics =
+      search_->opponent_backend_ && params_.GetOpponentDeepTactics() > 0.0f;
+  const uint32_t deep_visits =
+      static_cast<uint32_t>(params_.GetOpponentDeepTacticsVisits());
   const float discount = Discount();
 
   // Backup V value up to a root. After 1 visit, V = Q.
@@ -2777,6 +2890,13 @@ void SearchWorker::DoBackupUpdateSingleNode(
       m = n->GetM();
     }
     n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
+    // Opponent modeling: a position the search relies on gets a closer look
+    // for the opponent once it has enough visits (see OpponentDeepTactics).
+    if (deep_tactics && !n->IsTerminal() && OpponentModelAt(parent_depth + 1) &&
+        n->GetN() >= deep_visits &&
+        n->GetN() - node_to_process.multivisit < deep_visits) {
+      search_->QueueDeepTactics(n);
+    }
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }

@@ -368,6 +368,16 @@ It does not reach winning positions sooner either. [tools/play_vs_maia.py](tools
 
 With 0.6 the engine took 2.3 half-moves longer on average (95% bootstrap interval +0.2 to +4.4), with 0.8 1.1 longer (−0.8 to +2.9). The opponent here is the engine's own model, which likely blunders more readily against it than real players would. The option stays, off by default.
 
+### A closer look where the search relies on the opponent
+The engine steers toward the positions where the model's player most readily goes wrong, so the model's errors matter most exactly there, even if the model is right on average. `OpponentTactics`' one-move look misjudged the Two Knights line both ways: at 1.0 it took `8...Bxg5`, the right start, from 90% to 42% (it sees `8...Bxg5 9.Bxg5 Qxg5 10.Qxd5` as even), raised `10...Qc1+` from 19% to 43%, and lowered `8.Ne4` more than `8.dxe5` (+0.008 against +0.392).
+
+So with `OpponentDeepTactics`, once a position where the opponent is to move has `OpponentDeepTacticsVisits` visits (1000), CPU threads beside the search score each of the opponent's moves there with an alpha-beta search `OpponentDeepTacticsDepth` half-moves deep (checks extend it, then the capture search), with Stockfish 11's classical evaluation, and the probabilities are reweighted as with `OpponentTactics`. Positions are found again by their path from the root. At depth 3 a position took 38 ms, at depth 4 about 300 ms and at depth 5 about 2.5 s; at depth 4 with 8 threads all of the 180-200 positions a 300k-node search queued were done, and the search's speed did not change.
+
+With ratings 1500, caution 0.15, `OpponentCautionAhead` 0.25, `OpponentTactics` 0.5, lean 1.0 and discount 0.995, at 300k nodes:
+- **Belgrade:** `5.Nd5` − `5.Nxd4` with equal search (about 34k and 129k visits each) went from −0.004 and +0.010 to +0.020 and +0.026 at 0.7, depth 4.
+- **Unchanged:** `1.e4`, `3.d4` after `2...Nc6`, `11.Qxe8`, `12.Bg3`, the Halloween's `8.Qxd5` and the mate in 2.
+- **`8.dxe5` stayed** at every setting tried (0.7 and 1.0, depth 3 to 5, 500 or 1000 visits): +0.34 to +0.37 against +0.26 to +0.30 for `8.Ne4`. The look raised `10...Qc1+` from 31% to 55%, but after `10...Qc1+ 11.Bd1 Qxb2 12.Qxa5 Qxa1 13.Nc3` the engine still expects `13...b6` (39%) or `13...O-O` (42%) to go wrong in lines with fewer visits, and the alternatives' values fell as well.
+
 ### Tried and not kept: Gumbel selection below the root
 Below the root, this engine's moves are chosen by PUCT, which favors whichever move took the lead first. So the lines the search assumes may not be those the root would choose, and the line it shows often seemed to change once its moves came to be played. Gumbel MuZero (Danihelka et al., 2022), whose root rule is the sequential halving used here, chooses below the root by an improved policy instead: pi'(a) = softmax(log P(a) + sigma(q(a))), with sigma(q) = (50 + max N) × c_scale × q, q mapped to [0, 1], and unvisited moves valued at the prior-weighted mean of the visited ones. Visits go to the move furthest below its share of pi', as at opponent nodes.
 

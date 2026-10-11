@@ -311,6 +311,14 @@ class SearchParams : public BaseSearchParams {
   int GetOpponentHorizon() const { return kOpponentHorizon; }
   bool GetOpponentSoundCaution() const { return kOpponentSoundCaution; }
   float GetOpponentWinValue() const { return kOpponentWinValue; }
+  float GetOpponentDeepTactics() const { return kOpponentDeepTactics; }
+  int GetOpponentDeepTacticsVisits() const {
+    return kOpponentDeepTacticsVisits;
+  }
+  int GetOpponentDeepTacticsDepth() const { return kOpponentDeepTacticsDepth; }
+  int GetOpponentDeepTacticsThreads() const {
+    return kOpponentDeepTacticsThreads;
+  }
   std::string GetTreeExportFile() const {
     return options_.Get<std::string>(kTreeExportFileId);
   }
@@ -340,6 +348,10 @@ class SearchParams : public BaseSearchParams {
   static const OptionId kOpponentHorizonId;
   static const OptionId kOpponentSoundCautionId;
   static const OptionId kOpponentWinValueId;
+  static const OptionId kOpponentDeepTacticsId;
+  static const OptionId kOpponentDeepTacticsVisitsId;
+  static const OptionId kOpponentDeepTacticsDepthId;
+  static const OptionId kOpponentDeepTacticsThreadsId;
   static const OptionId kTreeExportFileId;
   static const OptionId kTreeExportDepthId;
   static const OptionId kTreeExportWidthId;
@@ -360,6 +372,10 @@ class SearchParams : public BaseSearchParams {
   const int kOpponentHorizon;
   const bool kOpponentSoundCaution;
   const float kOpponentWinValue;
+  const float kOpponentDeepTactics;
+  const int kOpponentDeepTacticsVisits;
+  const int kOpponentDeepTacticsDepth;
+  const int kOpponentDeepTacticsThreads;
   const float kOpponentDiscount;
   const float kOpponentEngineMix;
   const float kOpponentTactics;

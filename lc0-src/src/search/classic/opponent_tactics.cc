@@ -155,6 +155,123 @@ std::vector<int> ScoreOpponentMoves(const std::string& fen,
   return result;
 }
 
+namespace {
+
+// An alpha-beta search without a hash table, for a few half-moves: captures
+// first (most valuable victim, least valuable attacker), then killer moves,
+// then checks. Checks extend the search, up to kMaxPly. It stops early when
+// `stop` becomes true.
+class DeepSearch {
+ public:
+  DeepSearch(Position& pos, const std::atomic<bool>* stop)
+      : pos_(pos), stop_(stop) {}
+
+  bool aborted() const { return aborted_; }
+
+  Value Search(int depth, Value alpha, Value beta, int ply) {
+    if (aborted_) return VALUE_ZERO;
+    if ((++nodes_ & 1023) == 0 && stop_ &&
+        stop_->load(std::memory_order_relaxed)) {
+      aborted_ = true;
+      return VALUE_ZERO;
+    }
+    const bool in_check = pos_.checkers();
+    if (in_check) ++depth;
+    if (depth <= 0 || ply >= kMaxPly) return QSearch(pos_, alpha, beta, ply);
+
+    ExtMove moves[MAX_MOVES];
+    ExtMove* end = generate<LEGAL>(pos_, moves);
+    if (end == moves) return in_check ? mated_in(ply) : VALUE_DRAW;
+    Order(moves, end, ply);
+    Value best = -VALUE_INFINITE;
+    StateInfo st;
+    for (ExtMove* m = moves; m != end; ++m) {
+      pos_.do_move(m->move, st);
+      const Value value = -Search(depth - 1, -beta, -alpha, ply + 1);
+      pos_.undo_move(m->move);
+      if (aborted_) return VALUE_ZERO;
+      if (value > best) {
+        best = value;
+        if (value > alpha) alpha = value;
+        if (value >= beta) {
+          if (!pos_.capture(m->move) && killers_[ply][0] != m->move) {
+            killers_[ply][1] = killers_[ply][0];
+            killers_[ply][0] = m->move;
+          }
+          break;
+        }
+      }
+    }
+    return best;
+  }
+
+  void Order(ExtMove* begin, ExtMove* end, int ply) {
+    for (ExtMove* m = begin; m != end; ++m) {
+      m->value = pos_.capture(m->move)         ? 100000 + CaptureOrder(pos_, m->move)
+                 : m->move == killers_[ply][0] ? 90000
+                 : m->move == killers_[ply][1] ? 80000
+                 : pos_.gives_check(m->move)   ? 70000
+                                               : 0;
+    }
+    std::stable_sort(begin, end, [](const ExtMove& a, const ExtMove& b) {
+      return a.value > b.value;
+    });
+  }
+
+ private:
+  Position& pos_;
+  const std::atomic<bool>* stop_;
+  uint64_t nodes_ = 0;
+  bool aborted_ = false;
+  Move killers_[kMaxPly + 1][2] = {};
+};
+
+}  // namespace
+
+std::vector<int> ScoreOpponentMovesDeep(const std::string& fen,
+                                        std::span<const TacticsMove> moves,
+                                        int depth,
+                                        const std::atomic<bool>* stop) {
+  InitStockfish();
+  Position pos;
+  StateInfo root_state;
+  pos.set(fen, false, &root_state, &ThisThread());
+  DeepSearch search(pos, stop);
+
+  ExtMove list[MAX_MOVES];
+  ExtMove* end = generate<LEGAL>(pos, list);
+  search.Order(list, end, 0);
+  // Each move is searched in a window from 8 pawns below the best so far to
+  // just above it, and again without the upper bound if it beats the best.
+  const int margin = 8 * int(PawnValueEg);
+  Value best = -VALUE_INFINITE;
+  std::unordered_map<int, int> scores;
+  StateInfo st;
+  for (ExtMove* m = list; m != end; ++m) {
+    pos.do_move(m->move, st);
+    Value value;
+    if (best == -VALUE_INFINITE) {
+      value = -search.Search(depth, -VALUE_INFINITE, VALUE_INFINITE, 1);
+    } else {
+      const Value floor = Value(std::max(int(best) - margin, -int(VALUE_INFINITE) + 1));
+      value = -search.Search(depth, -Value(best + 1), -floor, 1);
+      if (value > best) value = -search.Search(depth, -VALUE_INFINITE, -floor, 1);
+    }
+    pos.undo_move(m->move);
+    if (search.aborted()) return {};
+    best = std::max(best, value);
+    scores[Key(m->move)] = ToCentipawns(value);
+  }
+
+  std::vector<int> result;
+  result.reserve(moves.size());
+  for (const TacticsMove& m : moves) {
+    const auto it = scores.find(Key(m.from, m.to, m.promotion));
+    result.push_back(it == scores.end() ? -kMateCp : it->second);
+  }
+  return result;
+}
+
 struct SanWriter::Impl {
   Position pos;
   // A deque, so that the states' addresses, which the position keeps, stay put.
