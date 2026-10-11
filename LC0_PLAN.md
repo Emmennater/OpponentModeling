@@ -332,6 +332,17 @@ The engine values a line by how it would score, playing on itself, against the m
 
 But it did not help. With the settings of the `OpponentCautionAhead` test and `OpponentCautionAhead` 0.5, on the same 200 positions where the side to move is ahead, it ended below +1.5 in 4 at no horizon, and in 6, 6 and 5 at horizons 6, 10 and 16. The same settings without a horizon had given 6 in the earlier run, so the run-to-run noise is about two positions. Shorter horizons hurt the openings: at 6 the engine played `1.d4`, `5.Nxd4` in the Belgrade and `15.Rxe7+` at Halloween, and the Belgrade's `5.Nd5` − `5.Nxd4` gap with equal search was −0.022 and −0.013 at 6, −0.009 and −0.020 at 10, against +0.003 and +0.006 with no horizon. `8.dxe5` was avoided only at 6. The gambles found so far rest on the opponent going wrong within a few moves (Maia gives `10...Qc1+` only 17%), which no horizon removes. The option stays, off by default.
 
+**Retested with the deep look.** The exported tree showed why a horizon is wanted: at the ends of lines the engine's expected score against the model (89% at Stockfish +0.0, 100% at +1.3) runs far above Lc0's own evaluation (53%, 71%), because it counts on the model's mistakes long after the opening. A 300k-node tree from the Belgrade has half its visits 15 half-moves deep or more, 10% at 21 or more. With ratings 1500, caution 0.15, `OpponentCautionAhead` 0.25, `OpponentTactics` 0.5, `OpponentDeepTactics` 0.7 (depth 2, 100 visits), lean 1.0 and discount 0.995 (one run each):
+
+| `OpponentHorizon` | Belgrade gap (34k, 129k) | Belgrade | Two Knights, move 8 | `12.Bg3`, `1.e4`, `3.d4` |
+|---|---|---|---|---|
+| 0 | +0.026, +0.030 | `5.Nd5` | `8.dxe5` (+0.38, `8.Ne4` +0.26) | all |
+| 12 | +0.003, +0.000 | `5.Nd5` | `8.c4` (`8.dxe5` +0.19, `8.Ne4` +0.23) | all |
+| 16 | +0.015, +0.017 | `5.Nd5` | `8.dxe5` (+0.32, +0.26) | all |
+| 20 | +0.026, +0.027 | `5.Nd5` | `8.dxe5` (+0.36, +0.27) | all |
+
+At 12 the engine gave up `8.dxe5`, whose hopes lie after the twelfth half-move, but the Belgrade's lead shrank to nothing.
+
 ### Tried: judging refutations by their sound value
 In the Two Knights line above, the refutation of `8.dxe5` is a chain: with Maia at 1900, `8...Bxg5` 80%, then after `10.Qxd5` the refuting `10...Qc1+` 28% (`10...Nc6` 65%), `11...Qxb2` 65% and `12...Qxa1` 95%, after which Black's queen on a1 can still be trapped (`13.Nc3`, where Maia gives the clean `13...Qb2` 10%). The engine valued the position after `10...Qc1+` at +0.04 for White and the one a rook down at +0.16, against −2.9 and −4.5 by Stockfish, so caution saw little to fear in the refutation. Raising the opponent's rating to 1900 did not change the choice. In a game from that line, the user, as Black, kept the advantage from move 12 to about move 29, and lost only after several later mistakes: the engine's hopes were for slow wins.
 
