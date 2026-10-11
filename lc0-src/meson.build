@@ -199,6 +199,7 @@ files += [
   'src/neural/xla/xla_tensor.cc',
   'src/search/classic/params.cc',
   'src/search/classic/search.cc',
+  'src/search/classic/uci_engine.cc',
   'src/search/classic/stoppers/alphazero.cc',
   'src/search/classic/stoppers/common.cc',
   'src/search/classic/stoppers/factory.cc',

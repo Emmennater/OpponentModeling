@@ -856,6 +856,10 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
       }
       std::vector<ThinkingInfo> infos(1);
       infos[0].comment =
+          deep_failed_.load(std::memory_order_relaxed)
+              ? "deep tactics: Stockfish could not be started; set "
+                "OpponentStockfishPath"
+              :
           "deep tactics: " + std::to_string(done) + " positions, " +
           std::to_string(done ? deep_ms_.load(std::memory_order_relaxed) / done
                               : 0) +
@@ -1321,11 +1325,7 @@ void Search::QueueDeepTactics(const Node* node) REQUIRES(nodes_mutex_) {
   request.fen = PositionToFen(history.Last());
   const bool black_to_move = history.IsBlackToMove();
   for (const auto& edge : node->Edges()) {
-    Move move = edge.GetMove();
-    if (black_to_move) move.Flip();
-    request.moves.push_back(
-        {move.from().as_idx(), move.to().as_idx(),
-         move.is_promotion() ? move.promotion().ToString()[0] : '\0'});
+    request.moves.push_back(edge.GetMove(black_to_move).ToString(false));
   }
   {
     std::lock_guard<std::mutex> lock(deep_mutex_);
@@ -1338,6 +1338,17 @@ void Search::DeepTacticsThread() {
   const int depth = params_.GetOpponentDeepTacticsDepth();
   const float max_rate = params_.GetOpponentDeepTactics();
   constexpr float kLossScaleCp = 300.0f;
+  // A search stops Stockfish's at this time at the latest.
+  constexpr int kMaxMs = 2000;
+  const std::string path = params_.GetOpponentStockfishPath();
+  std::unique_ptr<UciEngine> stockfish =
+      path.empty() ? nullptr : UciEngine::Start(path);
+  if (!stockfish) {
+    deep_failed_.store(true, std::memory_order_relaxed);
+    LOGFILE << "OpponentDeepTactics: could not start Stockfish at '" << path
+            << "'.";
+    return;
+  }
   while (!stop_.load(std::memory_order_acquire)) {
     DeepTacticsRequest request;
     {
@@ -1350,9 +1361,14 @@ void Search::DeepTacticsThread() {
       deep_queue_.pop_front();
     }
     const auto start = std::chrono::steady_clock::now();
-    const std::vector<int> scores =
-        ScoreOpponentMovesDeep(request.fen, request.moves, depth, &stop_);
-    if (scores.empty()) break;  // Stopped.
+    const std::optional<std::vector<int>> result =
+        stockfish->Score(request.fen, request.moves, depth, kMaxMs);
+    if (!result) {
+      LOGFILE << "OpponentDeepTactics: Stockfish stopped working.";
+      break;
+    }
+    const std::vector<int>& scores = *result;
+    if (stop_.load(std::memory_order_acquire)) break;
 
     SharedMutex::Lock lock(nodes_mutex_);
     Node* node = root_node_;
@@ -1373,10 +1389,7 @@ void Search::DeepTacticsThread() {
       std::ostringstream oss;
       oss << "Deep tactics " << request.fen << ":";
       for (size_t i = 0; i < scores.size(); ++i) {
-        const TacticsMove& m = request.moves[i];
-        oss << " " << char('a' + m.from % 8) << char('1' + m.from / 8)
-            << char('a' + m.to % 8) << char('1' + m.to / 8) << " "
-            << scores[i];
+        oss << " " << request.moves[i] << " " << scores[i];
       }
       LOGFILE << oss.str();
     }

@@ -18,7 +18,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <memory>
 #include <span>
 #include <string>
@@ -45,17 +44,6 @@ struct TacticsMove {
 // implemented with Stockfish 11 (third_party/stockfish11). Thread-safe.
 std::vector<int> ScoreOpponentMoves(const std::string& fen,
                                     std::span<const TacticsMove> moves);
-
-// Opponent modeling: like ScoreOpponentMoves, but each move is scored by an
-// alpha-beta search `depth` half-moves deep after it (checks extend the
-// search), then the capture search, so that it sees tactics a few moves deep
-// such as quiet checks and trapped pieces. Scores far below the best move's
-// are only bounds (a loss of at least 8 pawns). Returns an empty vector if
-// `stop` becomes true. Thread-safe.
-std::vector<int> ScoreOpponentMovesDeep(const std::string& fen,
-                                        std::span<const TacticsMove> moves,
-                                        int depth,
-                                        const std::atomic<bool>* stop);
 
 // Writes moves in standard algebraic notation (SAN), for exporting the search
 // tree as PGN, with Stockfish 11's board. Moves are played with Push() and

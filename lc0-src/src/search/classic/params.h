@@ -319,6 +319,9 @@ class SearchParams : public BaseSearchParams {
   int GetOpponentDeepTacticsThreads() const {
     return kOpponentDeepTacticsThreads;
   }
+  std::string GetOpponentStockfishPath() const {
+    return options_.Get<std::string>(kOpponentStockfishPathId);
+  }
   std::string GetTreeExportFile() const {
     return options_.Get<std::string>(kTreeExportFileId);
   }
@@ -352,6 +355,7 @@ class SearchParams : public BaseSearchParams {
   static const OptionId kOpponentDeepTacticsVisitsId;
   static const OptionId kOpponentDeepTacticsDepthId;
   static const OptionId kOpponentDeepTacticsThreadsId;
+  static const OptionId kOpponentStockfishPathId;
   static const OptionId kTreeExportFileId;
   static const OptionId kTreeExportDepthId;
   static const OptionId kTreeExportWidthId;

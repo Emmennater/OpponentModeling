@@ -42,6 +42,7 @@
 #include "search/classic/node.h"
 #include "search/classic/opponent_tactics.h"
 #include "search/classic/params.h"
+#include "search/classic/uci_engine.h"
 #include "search/classic/stoppers/timemgr.h"
 #include "syzygy/syzygy.h"
 #include "utils/logging.h"
@@ -149,13 +150,14 @@ class Search {
 
   // Opponent modeling: the closer look at positions the search relies on
   // (see OpponentDeepTactics). A worker queues a position where the opponent
-  // is to move once it has enough visits; CPU threads score its moves with
-  // a deeper search and adjust their probabilities. Positions are found again
-  // by their path from the root, as nodes may move (see Node::MakeSolid).
+  // is to move once it has enough visits; threads, each with a Stockfish
+  // process, score its moves and adjust their probabilities. Positions are
+  // found again by their path from the root, as nodes may move (see
+  // Node::MakeSolid).
   struct DeepTacticsRequest {
     std::vector<uint16_t> path;  // Edge indices from the root.
     std::string fen;
-    std::vector<TacticsMove> moves;  // In the node's edge order.
+    std::vector<std::string> moves;  // UCI, in the node's edge order.
   };
   void QueueDeepTactics(const Node* node) REQUIRES(nodes_mutex_);
   void DeepTacticsThread();
@@ -164,6 +166,7 @@ class Search {
   std::deque<DeepTacticsRequest> deep_queue_;
   std::atomic<int> deep_done_{0};
   std::atomic<int64_t> deep_ms_{0};
+  std::atomic<bool> deep_failed_{false};  // Stockfish could not be started.
 
   mutable Mutex counters_mutex_ ACQUIRED_AFTER(nodes_mutex_);
   // Tells all threads to stop.

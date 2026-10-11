@@ -617,24 +617,28 @@ const OptionId SearchParams::kOpponentDeepTacticsId{
     "opponent-deep-tactics", "OpponentDeepTactics",
     "With an opponent model, a closer look for the opponent where the search "
     "relies on it: once a position where the opponent is to move has "
-    "OpponentDeepTacticsVisits visits, each of the opponent's moves there is "
-    "scored by a search OpponentDeepTacticsDepth half-moves deep with "
-    "Stockfish 11's classical evaluation, which sees tactics such as quiet "
-    "checks and trapped pieces, and up to this share of a move's probability "
-    "goes to the best-scoring move, more the more the move loses (as with "
-    "OpponentTactics). It runs on OpponentDeepTacticsThreads CPU threads "
-    "beside the search. 0 turns this off."};
+    "OpponentDeepTacticsVisits visits, Stockfish (OpponentStockfishPath) "
+    "scores each of the opponent's moves there, searching "
+    "OpponentDeepTacticsDepth half-moves deep, and up to this share of a "
+    "move's probability goes to the best-scoring move, more the more the "
+    "move loses (as with OpponentTactics). It runs in "
+    "OpponentDeepTacticsThreads Stockfish processes beside the search. 0 "
+    "turns this off."};
 const OptionId SearchParams::kOpponentDeepTacticsVisitsId{
     "opponent-deep-tactics-visits", "OpponentDeepTacticsVisits",
     "With OpponentDeepTactics, the visits a position where the opponent is to "
     "move needs before it gets the closer look."};
 const OptionId SearchParams::kOpponentDeepTacticsDepthId{
     "opponent-deep-tactics-depth", "OpponentDeepTacticsDepth",
-    "With OpponentDeepTactics, how many half-moves deep the closer look "
-    "searches after each of the opponent's moves, before the capture search."};
+    "With OpponentDeepTactics, Stockfish's search depth."};
 const OptionId SearchParams::kOpponentDeepTacticsThreadsId{
     "opponent-deep-tactics-threads", "OpponentDeepTacticsThreads",
-    "With OpponentDeepTactics, how many CPU threads do the closer look."};
+    "With OpponentDeepTactics, how many Stockfish processes, each on one CPU "
+    "thread, do the closer look."};
+const OptionId SearchParams::kOpponentStockfishPathId{
+    "opponent-stockfish-path", "OpponentStockfishPath",
+    "With OpponentDeepTactics, the Stockfish executable (any UCI engine with "
+    "MultiPV) that does the closer look."};
 const OptionId SearchParams::kTreeExportFileId{
     "tree-export-file", "TreeExportFile",
     "After each search, the search tree is written to this file as PGN: this "
@@ -783,8 +787,9 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 1.0f) = 0.0f;
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 1000;
-  options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 12) = 4;
+  options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 8;
   options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 4;
+  options->Add<StringOption>(kOpponentStockfishPathId) = "";
   options->Add<StringOption>(kTreeExportFileId) = "";
   options->Add<IntOption>(kTreeExportDepthId, 1, 100) = 12;
   options->Add<IntOption>(kTreeExportWidthId, 1, 100) = 4;
