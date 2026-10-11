@@ -644,7 +644,22 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
           }
         }
         if (moves.empty()) {
-          add("{White " + percent(white_score(node, ply)) + "}");
+          // Also the main network's own evaluation of the position, without
+          // the opponent model or the search, from the cache.
+          std::string own;
+          if (node->IsTerminal()) {
+            own = ", Lc0 " + percent(white_score(node, ply));
+          } else {
+            const PositionHistory history = GetPositionHistoryAtNode(node);
+            const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(
+                EvalPosition{history.GetPositions(), {}});
+            if (eval) {
+              // The network's value is for the side to move.
+              const double q = ply % 2 == 1 ? -eval->q : eval->q;
+              own = ", Lc0 " + percent((1.0 + q) / 2);
+            }
+          }
+          add("{White " + percent(white_score(node, ply)) + own + "}");
           return;
         }
         const bool black = ply % 2 == 1;
@@ -709,11 +724,63 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   }
   file << "[Event \"Lc0 (OM) search tree\"]\n[Site \"?\"]\n"
        << "[Annotator \"Lc0 (OM): the opponent's likely replies with their "
-          "probabilities, White's expected score at the end of each line\"]\n"
+          "probabilities; at the end of each line, White's expected score "
+          "with this engine playing on against the modeled opponent, and "
+          "Lc0's own evaluation of the position\"]\n"
        << "[Date \"????.??.??\"]\n[Round \"-\"]\n[White \"?\"]\n"
        << "[Black \"?\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \""
        << PositionToFen(root) << "\"]\n\n"
        << wrapped << "\n";
+
+  // The tree's shape, by depth, to <path>.stats.txt: positions, visits, and
+  // how widely each kind of position spreads its visits over its moves.
+  struct DepthStats {
+    int64_t positions = 0;
+    int64_t visits = 0;
+    int64_t expanded = 0;  // Positions with visited moves.
+    double moves = 0.0;    // Visited moves, summed over them.
+    double effective = 0.0;  // exp(entropy of the visit shares), summed.
+  };
+  std::vector<DepthStats> by_depth;
+  std::function<void(const Node*, int)> count = [&](const Node* node,
+                                                    int depth) {
+    if (static_cast<int>(by_depth.size()) <= depth) by_depth.resize(depth + 1);
+    DepthStats& s = by_depth[depth];
+    ++s.positions;
+    s.visits += node->GetN();
+    const uint32_t child_visits = node->GetChildrenVisits();
+    if (child_visits == 0) return;
+    double entropy = 0.0;
+    int moves = 0;
+    for (const Node* child : node->VisitedNodes()) {
+      const double share = static_cast<double>(child->GetN()) / child_visits;
+      if (share > 0.0) entropy -= share * std::log(share);
+      ++moves;
+      count(child, depth + 1);
+    }
+    ++s.expanded;
+    s.moves += moves;
+    s.effective += std::exp(entropy);
+  };
+  count(root_node_, 1);
+  std::ofstream stats(path + ".stats.txt");
+  stats << "Search tree: " << root_node_->GetN()
+        << " visits. Depth 1 is the root; the opponent is to move at "
+        << (opponent_backend_ ? "even" : "no") << " depths.\n"
+        << "depth  to move   positions  share of visits  moves tried  "
+           "effective moves\n";
+  for (size_t d = 1; d < by_depth.size(); ++d) {
+    const DepthStats& s = by_depth[d];
+    stats << std::setw(5) << d << "  "
+          << std::left << std::setw(8)
+          << (opponent_at(static_cast<int>(d)) ? "opponent" : "engine")
+          << std::right << std::setw(10) << s.positions << std::setw(16)
+          << std::fixed << std::setprecision(1)
+          << 100.0 * s.visits / root_node_->GetN() << "%" << std::setw(13)
+          << std::setprecision(2) << (s.expanded ? s.moves / s.expanded : 0.0)
+          << std::setw(17)
+          << (s.expanded ? s.effective / s.expanded : 0.0) << "\n";
+  }
 }
 
 void Search::SendMovesStats() const REQUIRES(counters_mutex_) {
