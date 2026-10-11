@@ -1642,9 +1642,8 @@ void SearchWorker::ProcessPickedTask(int start_idx, int end_idx,
                                    BackendComputation::FETCHED_IMMEDIATELY;
 
         // Opponent modeling: opponent nodes also get the opponent model's
-        // move probabilities. Depth counts the root as 1, so the opponent is
-        // to move at even depths.
-        if (opponent_computation_ && picked_node.depth % 2 == 0) {
+        // move probabilities (see OpponentModelAt).
+        if (opponent_computation_ && OpponentModelAt(picked_node.depth)) {
           picked_node.opponent_eval = std::make_unique<EvalResult>();
           picked_node.opponent_eval->p.resize(legal_moves.size());
           picked_node.opponent_queried = true;
@@ -1927,10 +1926,10 @@ void SearchWorker::PickNodesToExtendTask(
       // proportion to the opponent model's move probabilities, instead of
       // going to the best-looking move. A node's value is the average of its
       // children's values weighted by their visits, so it becomes the
-      // opponent's expected value. Depth counts the root as 1, so the opponent
-      // is to move at even depths.
-      const bool opponent_node = search_->opponent_backend_ != nullptr &&
-                                 (current_path.size() + base_depth) % 2 == 0;
+      // opponent's expected value. Beyond OpponentHorizon, the opponent's
+      // moves are chosen as this engine's (see OpponentModelAt).
+      const bool opponent_node =
+          OpponentModelAt(static_cast<int>(current_path.size()) + base_depth);
       int cache_filled_idx = -1;
       while (cur_limit > 0) {
         int best_idx = -1;
@@ -2633,9 +2632,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
     // Where this engine is to move, it leans toward its most searched move
     // (see OpponentBestLean); where the opponent is, toward the opponent's
     // best plausible reply (see OpponentCaution), more so where this engine
-    // is ahead (see OpponentCautionAhead). n is at parent_depth + 1, and this
-    // engine is to move at odd depths.
-    if ((best_lean > 0.0f || cautious) && !n->IsTerminal()) {
+    // is ahead (see OpponentCautionAhead). n is at parent_depth + 1. Beyond
+    // OpponentHorizon, values are averaged as in Lc0.
+    if ((best_lean > 0.0f || cautious) && !n->IsTerminal() &&
+        WithinHorizon(parent_depth + 1)) {
       const bool our_node = (parent_depth + 1) % 2 == 1;
       double weighted_wl = 0.0;
       uint32_t visits = 0;
@@ -2700,8 +2700,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
     // If parent already is terminal further adjustment is not required.
     if (p->IsTerminal()) n_to_fix = 0;
     // Try setting parent bounds except the root or those already terminal.
-    const bool opponent_node =
-        search_->opponent_backend_ != nullptr && parent_depth % 2 == 0;
+    const bool opponent_node = OpponentModelAt(parent_depth);
     --parent_depth;
     update_parent_bounds =
         update_parent_bounds && p != search_->root_node_ && !p->IsTerminal() &&

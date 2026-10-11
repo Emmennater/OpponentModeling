@@ -587,6 +587,15 @@ const OptionId SearchParams::kOpponentCautionAheadId{
     "one. Since a winning line's value cannot rise much, a line that gives "
     "the advantage back for a likely mistake otherwise scores about the same "
     "as one that keeps it. 0 turns this off."};
+const OptionId SearchParams::kOpponentHorizonId{
+    "opponent-horizon", "OpponentHorizon",
+    "With an opponent model, how many half-moves ahead of the current "
+    "position the opponent model chooses the opponent's moves. Beyond them, "
+    "the opponent's moves are searched as this engine's own, so a line's "
+    "value is how far ahead it is after this many half-moves of the "
+    "opponent's likely play, not how a long game against the model would "
+    "end: a mistake the opponent might make later no longer props up a line "
+    "that gives material away now. 0 is no limit."};
 const OptionId SearchParams::kOpponentDiscountId{
     "opponent-discount", "OpponentDiscount",
     "With an opponent model, a result counts for this factor less for every "
@@ -713,6 +722,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentRefutationProbabilityId, 0.0f, 1.0f) =
       0.05f;
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
+  options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 0;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.0f;
@@ -816,6 +826,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentRefutationProbability(
           options.Get<float>(kOpponentRefutationProbabilityId)),
       kOpponentCautionAhead(options.Get<float>(kOpponentCautionAheadId)),
+      kOpponentHorizon(options.Get<int>(kOpponentHorizonId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
       kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)),
       kOpponentTactics(options.Get<float>(kOpponentTacticsId)) {}

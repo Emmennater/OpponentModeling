@@ -468,6 +468,19 @@ class SearchWorker {
                ? params_.GetOpponentDiscount()
                : 1.0f;
   }
+  // Opponent modeling: whether the opponent model chooses the move at a node
+  // of this depth, counting the root as 1: the opponent is to move at even
+  // depths, and the model is used within OpponentHorizon half-moves.
+  bool OpponentModelAt(int depth) const {
+    return depth % 2 == 0 && WithinHorizon(depth);
+  }
+  // Opponent modeling: whether a node of this depth is within OpponentHorizon,
+  // where values are recomputed with OpponentBestLean and OpponentCaution.
+  // Beyond it, the search is Lc0's own.
+  bool WithinHorizon(int depth) const {
+    const int horizon = params_.GetOpponentHorizon();
+    return search_->opponent_backend_ && (horizon == 0 || depth <= horizon);
+  }
   // Opponent modeling: discounts a node that was just made terminal by the
   // plies to the game's end, so that it compares with discounted values.
   void DiscountTerminal(Node* node) const {
