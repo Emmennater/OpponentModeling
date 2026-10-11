@@ -614,10 +614,20 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   const int root_ply =
       2 * (std::stoi(root_fen.substr(root_fen.rfind(' ') + 1)) - 1) +
       (root_black ? 1 : 0);
+  // OpponentDiscount discounts a value by the plies to the game's predicted
+  // end, so a sure win far from the end looks like 85%. The export undoes it
+  // with the node's own estimate of the plies left, so that the score shows
+  // how won the position is rather than how long the game may last.
+  const float discount = opponent_backend_ && backend_attributes_.has_mlh &&
+                                 params_.GetOpponentWinValue() >= 1.0f
+                             ? params_.GetOpponentDiscount()
+                             : 1.0f;
   // White's expected score at a node, whose value is for the side that just
   // moved into it; ply is the node's.
-  auto white_score = [](const Node* node, int ply) {
-    const float wl = node->GetWL();
+  auto white_score = [&](const Node* node, int ply) {
+    const double wl = std::clamp<double>(
+        node->GetWL() / std::pow(discount, std::max(0.0f, node->GetM())), -1.0,
+        1.0);
     return (1.0 + (ply % 2 == 1 ? wl : -wl)) / 2;
   };
   // This engine's moves are the one it plays (at the root) or the most
