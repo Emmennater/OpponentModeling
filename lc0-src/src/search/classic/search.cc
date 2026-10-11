@@ -2636,9 +2636,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
       uint32_t visits = 0;
       uint32_t most_visits = 0;
       double most_visited_wl = 0.0;
-      // The best plausible reply, for the opponent at n
-      bool any_plausible = false;
-      double best_plausible_wl = 0.0;
+      // The children: their values for the side to move at n, and for the
+      // opponent's replies, each one's plausibility (see OpponentCaution).
+      std::vector<std::pair<double, double>> replies;  // (value, plausibility)
       for (Node* child : n->VisitedNodes()) {
         const uint32_t child_n = child->GetN();
         weighted_wl += static_cast<double>(child_n) * child->GetWL();
@@ -2647,11 +2647,13 @@ void SearchWorker::DoBackupUpdateSingleNode(
           most_visits = child_n;
           most_visited_wl = child->GetWL();
         }
-        if (!our_node && child_n > 0 &&
-            child->GetOwnEdge()->GetP() >= plausible &&
-            (!any_plausible || child->GetWL() > best_plausible_wl)) {
-          any_plausible = true;
-          best_plausible_wl = child->GetWL();
+        if (!our_node && caution > 0.0f && child_n > 0) {
+          replies.emplace_back(
+              child->GetWL(),
+              plausible > 0.0f
+                  ? std::min(1.0, static_cast<double>(
+                                     child->GetOwnEdge()->GetP() / plausible))
+                  : 1.0);
         }
       }
       if (visits > 0) {
@@ -2660,8 +2662,16 @@ void SearchWorker::DoBackupUpdateSingleNode(
         double wl = weighted_wl / visits;
         if (our_node) {
           wl += best_lean * (most_visited_wl - wl);
-        } else if (any_plausible) {
-          wl += caution * (best_plausible_wl - wl);
+        } else {
+          // The reply that, weighted by its plausibility, gains the opponent
+          // most over the expected value: a reply at least
+          // OpponentRefutationProbability likely counts fully, a less likely
+          // one in proportion, so that no refutation drops out at once.
+          double gain = 0.0;
+          for (const auto& [value, plausibility] : replies) {
+            gain = std::max(gain, plausibility * (value - wl));
+          }
+          wl += caution * gain;
         }
         n->SetWL(-wl * discount);
       }

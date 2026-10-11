@@ -63,7 +63,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentRootScout` (added later, see "Choosing the move at the root"): the root visits made with Lc0's usual rule before sequential halving starts, 1000 by default.
 - `OpponentTreeReuse` (added later, see "Choosing the move at the root"): whether a search keeps the previous search's tree, off by default.
 - `OpponentBestLean` (added later, see "Sharp moves need more search"): how far the value of a position where the engine is to move leans from the average of the moves searched there toward the most searched move's value, 0 by default.
-- `OpponentCaution` and `OpponentRefutationProbability` (added later, see "Caution: refutations that are plausible"): how far an opponent position's value leans toward the opponent's best plausible reply, 0 by default, and the probability from which a reply counts as plausible, 5% by default.
+- `OpponentCaution` and `OpponentRefutationProbability` (added later, see "Caution: refutations that are plausible"): how far an opponent position's value leans toward the opponent's best plausible reply, 0 by default, and the probability from which a reply counts fully as plausible, 5% by default; less likely replies count in proportion.
 - `OpponentDiscount` (added later, see "Sharp moves need more search"): how much less a result counts for each half-move until the game ends, 1 (off) by default.
 - `OpponentEngineMix` (added later, see "Sharp moves need more search"): the share of the main network's move probabilities mixed into the opponent model's, 0 by default.
 - `OpponentTactics` (added later, see "Sharp moves need more search"): how much of a quick tactical look the modeled opponent takes, 0 by default.
@@ -291,7 +291,13 @@ With both ratings at 1500, discount 0.995 and `OpponentBestLean` 1.0, 300k nodes
 | Halloween, move 8 | `8.Nxd5` 0.416 | `8.Qxd5` 0.188 (`8.Nxd5` 0.107) | `8.Qxd5` |
 | Halloween, move 15 | `15.Bg7` 0.546 (`15.Rxe7+` 0.454) | `15.Bg7` 0.267 (`15.Rxe7+` 0.062) | `15.Bg7` (`15.Rxe7+` −0.33) |
 
-`8.Qxd5` is Stockfish's choice; `15.Bg7` and Stockfish's `15.Qxf5` both score −6.9, against −9.1 for `15.Rxe7+`. With caution 0.3, the opening choices are unchanged (`1.e4`; the Belgrade Gambit `5.Nd5` at 100k nodes; `3.Nc3` after `2...Nc6`; `2.d4` after `1...c5`), and the mate in 2 above is still played, after 677 nodes. Values are lower: caution 0.3 takes about 0.15 to 0.2 off them in these positions.
+`8.Qxd5` is Stockfish's choice; `15.Bg7` and Stockfish's `15.Qxf5` both score −6.9, against −9.1 for `15.Rxe7+`. Values are lower: caution 0.3 takes about 0.15 to 0.2 off them in these positions.
+
+**No cliff at the threshold.** With a hard threshold, a refutation at 4.9% would not count at all, so the engine could sacrifice material expecting a capture the model gives 95%, as if the opponent had to capture, as in checkers. On the full-game positions, Maia-3's confident predictions are well calibrated, captures included: 96.6% predicted against 95.9% played at 95-98%, and 99.2% against 99.0% above 98%. On captures that lose material at depth 10, which are poisoned, it predicts 27.0% against 27.0% taken at 150-299 cp, and 21.5% against 18.6% at 300 cp or more. But a player facing an engine's deliberate sacrifice may be more suspicious than in games between humans, which this data cannot show.
+
+So each reply counts with a weight of its probability over the threshold, at most 1: the value leans by `OpponentCaution` toward the reply whose weighted gain over the expected value is largest. A reply at 4% then counts with 0.8 of the weight at the 5% threshold, and one at 0.1% with 0.02. A lower threshold is more cautious, and a higher one relies more on unlikely refutations being missed.
+
+With caution 0.3 and the threshold at 5%: `8.Qxd5` and `15.Bg7` again, `1.e4`, `2.d4` after `1...c5`, and the mate in 2 after 306 nodes. The Belgrade Gambit gives way to `5.Nxd4` at 100k nodes (0.338 against 0.306), and `3.Bc4` edges `3.Nc3` after `2...Nc6` (0.318 against 0.308). The Belgrade's good replies for Black are not rare enough to ignore.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

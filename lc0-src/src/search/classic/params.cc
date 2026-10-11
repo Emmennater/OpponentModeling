@@ -569,14 +569,15 @@ const OptionId SearchParams::kOpponentCautionId{
     "With an opponent model, how far the value of a position where the "
     "opponent is to move leans from the expected value under the opponent "
     "model toward the value of the opponent's best plausible reply: one the "
-    "model gives at least OpponentRefutationProbability. A move that loses "
-    "to a plausible reply is then worth less, while one whose refutation is "
-    "less likely than that is valued as before. 0 turns this off."};
+    "model gives at least OpponentRefutationProbability, a less likely one "
+    "counting in proportion to its probability. A move that loses to a "
+    "plausible reply is then worth less, while one refuted only by a very "
+    "unlikely reply keeps its value. 0 turns this off."};
 const OptionId SearchParams::kOpponentRefutationProbabilityId{
     "opponent-refutation-probability", "OpponentRefutationProbability",
     "With OpponentCaution, the probability from which the opponent model's "
-    "replies count as plausible: replies less likely than this are not "
-    "expected to be found."};
+    "replies count fully as plausible; a less likely reply counts in "
+    "proportion to its probability."};
 const OptionId SearchParams::kOpponentDiscountId{
     "opponent-discount", "OpponentDiscount",
     "With an opponent model, a result counts for this factor less for every "
