@@ -311,6 +311,20 @@ With caution 0.3 and the threshold at 5%: `8.Qxd5` and `15.Bg7` again, `1.e4`, `
 
 With caution 0.15 the start position (`1.e4`), `3.Nc3` after `2...Nc6`, `2.d4` after `1...c5` and the mate in 2 are unchanged. So 0.15 is the suggested setting.
 
+### Tried and not kept: Gumbel selection below the root
+Below the root, this engine's moves are chosen by PUCT, which favors whichever move took the lead first. So the lines the search assumes may not be those the root would choose, and the line it shows often seemed to change once its moves came to be played. Gumbel MuZero (Danihelka et al., 2022), whose root rule is the sequential halving used here, chooses below the root by an improved policy instead: pi'(a) = softmax(log P(a) + sigma(q(a))), with sigma(q) = (50 + max N) × c_scale × q, q mapped to [0, 1], and unvisited moves valued at the prior-weighted mean of the visited ones. Visits go to the move furthest below its share of pi', as at opponent nodes.
+
+With both ratings at 1500, discount 0.995, `OpponentBestLean` 1.0 and `OpponentCaution` 0.15, the gap `5.Nd5` − `5.Nxd4` at about 9k, 34k and 129k visits each:
+
+| Selection below the root | ~9k | ~34k | ~129k | Nodes per second |
+|---|---|---|---|---|
+| PUCT | −0.005 | +0.012 | +0.030 | 21,000 |
+| Gumbel, c_scale 0.02 | −0.051 | −0.013 | +0.004 | 16,600 |
+| Gumbel, c_scale 0.1 | +0.000 | +0.004 | +0.011 | 16,000 |
+| Gumbel, c_scale 1.0 | −0.014 | −0.004 | +0.010 | 16,400 |
+
+The line's own third move was played once its first two had been in 4 of 5 opening positions with PUCT, and with Gumbel at 0.1 too, at 100k nodes. Gumbel at 0.1 also moved the start position to `1.d4` and the Belgrade position to `5.Nxd4`. It did no better and cost about 22% of the speed, so it was not kept.
+
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
 - **Calibration.** A previous project reweighted Maia's probabilities with a low-depth Stockfish evaluation, moving part of a move's probability to the evaluation's best move by `max_rate × (1 − exp(−loss / scale_cp))`, to suppress blunders a quick look would catch. Whether that predicts real moves better can be measured offline with the measurement tool before building it in. Building it in would need a low-depth evaluation of every candidate at each new opponent node, either a Stockfish evaluator compiled into Lc0 (CPU) or the main network's evaluation of the candidate positions (GPU). **Resolved: not needed.** Measured on 7,451 positions from full blitz and rapid games between players rated 1200–1399, raw Maia3-23M at temperature 1.0 already matches how often players blunder, in the opening, the middlegame and late in the game. No calibration setting predicted moves better (see "Tuning the calibration" in [MEASUREMENTS.md](MEASUREMENTS.md)).
