@@ -299,6 +299,18 @@ So each reply counts with a weight of its probability over the threshold, at mos
 
 With caution 0.3 and the threshold at 5%: `8.Qxd5` and `15.Bg7` again, `1.e4`, `2.d4` after `1...c5`, and the mate in 2 after 306 nodes. The Belgrade Gambit gives way to `5.Nxd4` at 100k nodes (0.338 against 0.306), and `3.Bc4` edges `3.Nc3` after `2...Nc6` (0.318 against 0.308). The Belgrade's good replies for Black are not rare enough to ignore.
 
+**But caution 0.3 is too much for the Belgrade.** In the games file, across all ratings, White scores 60.7% after `5.Nd5` (546 games) against 53.8% after `5.Nxd4` (17,235): 55.9% against 52.9% where the average rating is under 1600, and 67.6% against 55.6% from 1600. Players who choose the Belgrade likely know it, which flatters it, but the edge is clear. After `5.Nd5`, Black played `5...Nxd5` in 30% of the games (White scored 61%), `5...Nxe4` in 27% (68%), `5...Bc5` in 18% (56%), and `5...Bb4`, the best defense, in 7% (49%). The good replies equalize, they do not refute. Caution penalizes any move whose plausible best reply falls well below its expected value, so it held down a gambit with a large upside and an equal worst case. Weaker caution fixes the Halloween moves and keeps the Belgrade:
+
+| Caution, threshold | Belgrade (100k nodes) | Halloween, move 8 | Halloween, move 15 |
+|---|---|---|---|
+| 0.1, 5% | `5.Nd5` | `8.Qxd5` | `15.Bg7` |
+| 0.15, 5% | `5.Nd5` | `8.Qxd5` | `15.Bg7` |
+| 0.2, 5% | `5.Nd5` | `8.Qxd5` | `15.Bg7` |
+| 0.3, 15% | `5.Nd5` | `8.Qxd5` | `15.Bg7` |
+| 0.3, 30% | `5.Nd5` | `8.Qxd5` | `15.Qxf5` |
+
+With caution 0.15 the start position (`1.e4`), `3.Nc3` after `2...Nc6`, `2.d4` after `1...c5` and the mate in 2 are unchanged. So 0.15 is the suggested setting.
+
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
 - **Calibration.** A previous project reweighted Maia's probabilities with a low-depth Stockfish evaluation, moving part of a move's probability to the evaluation's best move by `max_rate × (1 − exp(−loss / scale_cp))`, to suppress blunders a quick look would catch. Whether that predicts real moves better can be measured offline with the measurement tool before building it in. Building it in would need a low-depth evaluation of every candidate at each new opponent node, either a Stockfish evaluator compiled into Lc0 (CPU) or the main network's evaluation of the candidate positions (GPU). **Resolved: not needed.** Measured on 7,451 positions from full blitz and rapid games between players rated 1200–1399, raw Maia3-23M at temperature 1.0 already matches how often players blunder, in the opening, the middlegame and late in the game. No calibration setting predicted moves better (see "Tuning the calibration" in [MEASUREMENTS.md](MEASUREMENTS.md)).
