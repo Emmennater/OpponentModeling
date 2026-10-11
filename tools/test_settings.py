@@ -208,6 +208,8 @@ def main():
                         help="its values; the first is the baseline")
     parser.add_argument("--tag", default="", help="experiment name: files go to lc0/finetune/<tag>"
                         " (by default the option's name)")
+    parser.add_argument("--set", nargs="+", default=[], metavar="NAME=VALUE",
+                        help="other settings to change from the playing settings, such as OpponentModelOwnRating=1500")
     parser.add_argument("--positions", type=int, default=200)
     parser.add_argument("--nodes", type=int, default=50000)
     args = parser.parse_args()
@@ -215,6 +217,9 @@ def main():
     OPTION = args.option
     WORK = fv.SHARED / (args.tag or args.option)
     WORK.mkdir(parents=True, exist_ok=True)
+    for setting in args.set:
+        name, value = setting.split("=", 1)
+        PLAYING[name] = value
     print(f"Testing {OPTION} at {', '.join(args.values)}, with {PLAYING}")
     sf = chess.engine.SimpleEngine.popen_uci(str(STOCKFISH))
     sf.configure({"Threads": 4, "Hash": 256})
