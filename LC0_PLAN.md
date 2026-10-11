@@ -344,6 +344,10 @@ So with `OpponentSoundCaution`, each node also keeps a sound value (in padding, 
 | Sound, `OpponentCautionAhead` 0 | `h4` | +0.06 | +0.13 | −0.034, −0.111 | `5.Nxd4` | `1.Nf3` | `3.Bc4` |
 | Sound, caution 0.08 | `Ne4` | +0.24 | +0.27 | −0.014, −0.089 | `5.Nxd4` | `1.d4` | `3.Nc3` |
 | Sound, refutation probability 0.25 | `h4` | +0.12 | +0.04 | −0.011, −0.023 | `5.Nxd4` | `1.e4` | `3.d4` |
+| Sound, refutation probability 0.35 | `h4` | +0.19 | +0.28 | −0.008, −0.027 | `5.Nxd4` | `1.d4` | `3.d4` |
+| Sound, refutation probability 0.5 | `h4` | +0.32 | +0.39 | −0.013, +0.009 | `5.Nxd4` | `1.e4` | `3.d4` |
+
+(The last three with `OpponentCautionAhead` 0.) A hard exclusion of moves Stockfish scores as losing was considered and rejected: a bad move should stay possible when its refutation is unlikely. A higher refutation probability says that with the sound value: the refutation's full objective damage, counted in proportion to its likelihood up to that probability.
 
 It removes `8.dxe5`, but it charges the Belgrade for its objective refutations too, and the engine turns to quieter openings. Lc0's own judgment barely separates the two: without the opponent model it values `5.Nd5` at −0.07 against +0.06 for `5.Nxd4`, and `8.dxe5` at −0.41 against −0.17 for `8.Ne4`, while Stockfish puts the costs at 0.24 and 2.8 pawns. The option stays, off by default.
 
