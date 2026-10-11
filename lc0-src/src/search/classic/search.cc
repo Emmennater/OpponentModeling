@@ -2599,6 +2599,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
   const float caution =
       search_->opponent_backend_ ? params_.GetOpponentCaution() : 0.0f;
   const float plausible = params_.GetOpponentRefutationProbability();
+  const float caution_ahead = search_->opponent_backend_
+                                  ? params_.GetOpponentCautionAhead()
+                                  : 0.0f;
+  const bool cautious = caution > 0.0f || caution_ahead > 0.0f;
   const float discount = Discount();
 
   // Backup V value up to a root. After 1 visit, V = Q.
@@ -2628,9 +2632,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
     // Opponent modeling: the node's value is recomputed from its children's.
     // Where this engine is to move, it leans toward its most searched move
     // (see OpponentBestLean); where the opponent is, toward the opponent's
-    // best plausible reply (see OpponentCaution). n is at parent_depth + 1,
-    // and this engine is to move at odd depths.
-    if ((best_lean > 0.0f || caution > 0.0f) && !n->IsTerminal()) {
+    // best plausible reply (see OpponentCaution), more so where this engine
+    // is ahead (see OpponentCautionAhead). n is at parent_depth + 1, and this
+    // engine is to move at odd depths.
+    if ((best_lean > 0.0f || cautious) && !n->IsTerminal()) {
       const bool our_node = (parent_depth + 1) % 2 == 1;
       double weighted_wl = 0.0;
       uint32_t visits = 0;
@@ -2647,7 +2652,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
           most_visits = child_n;
           most_visited_wl = child->GetWL();
         }
-        if (!our_node && caution > 0.0f && child_n > 0) {
+        if (!our_node && cautious && child_n > 0) {
           replies.emplace_back(
               child->GetWL(),
               plausible > 0.0f
@@ -2671,7 +2676,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
           for (const auto& [value, plausibility] : replies) {
             gain = std::max(gain, plausibility * (value - wl));
           }
-          wl += caution * gain;
+          // wl is the opponent's, so this engine is ahead where it is below 0
+          const double node_caution =
+              std::min(1.0, caution + caution_ahead * std::max(0.0, -wl));
+          wl += node_caution * gain;
         }
         n->SetWL(-wl * discount);
       }
