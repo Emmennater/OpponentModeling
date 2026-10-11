@@ -606,16 +606,17 @@ const OptionId SearchParams::kOpponentSoundCautionId{
     "later."};
 const OptionId SearchParams::kTreeExportFileId{
     "tree-export-file", "TreeExportFile",
-    "After each search, the search tree is written to this file as PGN, its "
-    "most searched lines as variations, each move with its probability (the "
-    "opponent model's at the opponent's moves, the main network's at this "
-    "engine's), visits and White's expected score. Empty turns this off."};
+    "After each search, the search tree is written to this file as PGN: this "
+    "engine's moves, the opponent's likely replies as variations with the "
+    "opponent model's probabilities, and White's expected score at the end "
+    "of each line. Empty turns this off."};
 const OptionId SearchParams::kTreeExportDepthId{
     "tree-export-depth", "TreeExportDepth",
     "With TreeExportFile, how many half-moves deep the lines go."};
 const OptionId SearchParams::kTreeExportWidthId{
     "tree-export-width", "TreeExportWidth",
-    "With TreeExportFile, at most this many moves from each position."};
+    "With TreeExportFile, at most this many of the opponent's replies from "
+    "each position."};
 const OptionId SearchParams::kTreeExportMinShareId{
     "tree-export-min-share", "TreeExportMinShare",
     "With TreeExportFile, a move is written if it has at least this share of "
