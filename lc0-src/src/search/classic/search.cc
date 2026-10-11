@@ -2596,6 +2596,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
   const float best_lean = search_->opponent_backend_
                               ? params_.GetOpponentBestLean()
                               : 0.0f;
+  const float caution =
+      search_->opponent_backend_ ? params_.GetOpponentCaution() : 0.0f;
+  const float plausible = params_.GetOpponentRefutationProbability();
   const float discount = Discount();
 
   // Backup V value up to a root. After 1 visit, V = Q.
@@ -2622,16 +2625,21 @@ void SearchWorker::DoBackupUpdateSingleNode(
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }
-    // Opponent modeling: the node's value is recomputed from its children's,
-    // and where this engine is to move it leans toward its most searched
-    // move (see OpponentBestLean). n is at parent_depth + 1, and this engine
-    // is to move at odd depths.
-    if (best_lean > 0.0f && !n->IsTerminal()) {
+    // Opponent modeling: the node's value is recomputed from its children's.
+    // Where this engine is to move, it leans toward its most searched move
+    // (see OpponentBestLean); where the opponent is, toward the opponent's
+    // best plausible reply (see OpponentCaution). n is at parent_depth + 1,
+    // and this engine is to move at odd depths.
+    if ((best_lean > 0.0f || caution > 0.0f) && !n->IsTerminal()) {
+      const bool our_node = (parent_depth + 1) % 2 == 1;
       double weighted_wl = 0.0;
       uint32_t visits = 0;
       uint32_t most_visits = 0;
       double most_visited_wl = 0.0;
-      for (const Node* child : n->VisitedNodes()) {
+      // The best plausible reply, for the opponent at n
+      bool any_plausible = false;
+      double best_plausible_wl = 0.0;
+      for (Node* child : n->VisitedNodes()) {
         const uint32_t child_n = child->GetN();
         weighted_wl += static_cast<double>(child_n) * child->GetWL();
         visits += child_n;
@@ -2639,13 +2647,21 @@ void SearchWorker::DoBackupUpdateSingleNode(
           most_visits = child_n;
           most_visited_wl = child->GetWL();
         }
+        if (!our_node && child_n > 0 &&
+            child->GetOwnEdge()->GetP() >= plausible &&
+            (!any_plausible || child->GetWL() > best_plausible_wl)) {
+          any_plausible = true;
+          best_plausible_wl = child->GetWL();
+        }
       }
       if (visits > 0) {
         // The children's values are for the side to move at n, n's for the
         // other side, and a ply further from the game's end.
         double wl = weighted_wl / visits;
-        if ((parent_depth + 1) % 2 == 1) {
+        if (our_node) {
           wl += best_lean * (most_visited_wl - wl);
+        } else if (any_plausible) {
+          wl += caution * (best_plausible_wl - wl);
         }
         n->SetWL(-wl * discount);
       }

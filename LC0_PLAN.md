@@ -63,6 +63,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentRootScout` (added later, see "Choosing the move at the root"): the root visits made with Lc0's usual rule before sequential halving starts, 1000 by default.
 - `OpponentTreeReuse` (added later, see "Choosing the move at the root"): whether a search keeps the previous search's tree, off by default.
 - `OpponentBestLean` (added later, see "Sharp moves need more search"): how far the value of a position where the engine is to move leans from the average of the moves searched there toward the most searched move's value, 0 by default.
+- `OpponentCaution` and `OpponentRefutationProbability` (added later, see "Caution: refutations that are plausible"): how far an opponent position's value leans toward the opponent's best plausible reply, 0 by default, and the probability from which a reply counts as plausible, 5% by default.
 - `OpponentDiscount` (added later, see "Sharp moves need more search"): how much less a result counts for each half-move until the game ends, 1 (off) by default.
 - `OpponentEngineMix` (added later, see "Sharp moves need more search"): the share of the main network's move probabilities mixed into the opponent model's, 0 by default.
 - `OpponentTactics` (added later, see "Sharp moves need more search"): how much of a quick tactical look the modeled opponent takes, 0 by default.
@@ -277,6 +278,20 @@ It costs about 15 to 25% of the speed.
 - **More search.** With equal search, `3.Nc3` leads `3.d4` at every length: 0.481 against 0.454 at about 34k visits each, 0.537 against 0.513 at 129k, 0.585 against 0.566 at 429k.
 
 The engine's main lines show why: `3.Nc3` is not the quiet Four Knights the statistics mostly count, but the Scotch Four Knights, `3...Nf6 4.d4 exd4 5.Nxd4 Nxd4 6.Qxd4`, where it expects natural mistakes such as `6...b6?`, met by `7.e5`. After `1...e5` it plays `2.d4`, reaching the Scotch by transposition, and after `1...c5` an open Sicilian by `2.d4`. Its opening choices are sharp central lines, chosen consistently, so they reflect its model of the opponent rather than a lack of search.
+
+### Caution: refutations that are plausible
+The engine values a position by the expected result against the opponent model, so it will give up material for a line in which the model's player usually goes wrong, however close at hand the refutation. In a Halloween Gambit game (`1.e4 e5 2.Nf3 Nc6 3.Nc3 Nf6 4.Nxe5 Nxe5 5.d4 Ng6 6.e5 Ng8 7.Qf3 d5`), with both ratings at 1500, it played `8.Nxd5?` (Stockfish: from −2.3 to −6.1), expecting `8...Be6` (47.5%), when `8...c6`, which the model gave 28%, refutes it. Later it played `15.Rxe7+?` from a position Stockfish scores −6.9, which it valued at +0.54, an expected score of about 77%. Maia-3's own value for that position, between two 1500 players, gives White 25%. Following the engine's main line, its Black moves were mostly Maia's top choices. Several were mistakes, such as walking into a second knight fork at 46%, so the engine was applying its model faithfully. But a real player who is a piece up, facing precise threats, may be more careful than the model's move-by-move rates. The lean toward our best move adds to the optimism (+0.40 without it), but is not the cause (+0.54 without the lean or the discount).
+
+The aim is to keep tricks whose refutation is very unlikely, and avoid those a player may well find. So with `OpponentCaution` above 0, the value of a position where the opponent is to move leans by that fraction from the expected value toward the value of the opponent's best plausible reply: the best of those the model gives at least `OpponentRefutationProbability` (5%). It is computed in the same recomputation of values from children as `OpponentBestLean`. A move refuted only by a reply rarer than that keeps its value; a trap whose plausible best reply leaves the position level keeps most of it.
+
+With both ratings at 1500, discount 0.995 and `OpponentBestLean` 1.0, 300k nodes:
+
+| Position | Caution 0 | Caution 0.3 | Caution 0.6 |
+|---|---|---|---|
+| Halloween, move 8 | `8.Nxd5` 0.416 | `8.Qxd5` 0.188 (`8.Nxd5` 0.107) | `8.Qxd5` |
+| Halloween, move 15 | `15.Bg7` 0.546 (`15.Rxe7+` 0.454) | `15.Bg7` 0.267 (`15.Rxe7+` 0.062) | `15.Bg7` (`15.Rxe7+` −0.33) |
+
+`8.Qxd5` is Stockfish's choice; `15.Bg7` and Stockfish's `15.Qxf5` both score −6.9, against −9.1 for `15.Rxe7+`. With caution 0.3, the opening choices are unchanged (`1.e4`; the Belgrade Gambit `5.Nd5` at 100k nodes; `3.Nc3` after `2...Nc6`; `2.d4` after `1...c5`), and the mate in 2 above is still played, after 677 nodes. Values are lower: caution 0.3 takes about 0.15 to 0.2 off them in these positions.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

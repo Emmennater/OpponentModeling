@@ -564,6 +564,19 @@ const OptionId SearchParams::kOpponentBestLeanId{
     "toward the value of the most searched move: 0 is the average, as in "
     "Lc0, and 1 the most searched move. Values are then recomputed from the "
     "moves below each position as they are passed up the tree."};
+const OptionId SearchParams::kOpponentCautionId{
+    "opponent-caution", "OpponentCaution",
+    "With an opponent model, how far the value of a position where the "
+    "opponent is to move leans from the expected value under the opponent "
+    "model toward the value of the opponent's best plausible reply: one the "
+    "model gives at least OpponentRefutationProbability. A move that loses "
+    "to a plausible reply is then worth less, while one whose refutation is "
+    "less likely than that is valued as before. 0 turns this off."};
+const OptionId SearchParams::kOpponentRefutationProbabilityId{
+    "opponent-refutation-probability", "OpponentRefutationProbability",
+    "With OpponentCaution, the probability from which the opponent model's "
+    "replies count as plausible: replies less likely than this are not "
+    "expected to be found."};
 const OptionId SearchParams::kOpponentDiscountId{
     "opponent-discount", "OpponentDiscount",
     "With an opponent model, a result counts for this factor less for every "
@@ -686,6 +699,9 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kOpponentRootScoutId, 0, 1000000) = 1000;
   options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.0f;
   options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 0.0f;
+  options->Add<FloatOption>(kOpponentCautionId, 0.0f, 1.0f) = 0.0f;
+  options->Add<FloatOption>(kOpponentRefutationProbabilityId, 0.0f, 1.0f) =
+      0.05f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.0f;
@@ -785,6 +801,9 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentRootScout(options.Get<int>(kOpponentRootScoutId)),
       kOpponentMinProbability(options.Get<float>(kOpponentMinProbabilityId)),
       kOpponentBestLean(options.Get<float>(kOpponentBestLeanId)),
+      kOpponentCaution(options.Get<float>(kOpponentCautionId)),
+      kOpponentRefutationProbability(
+          options.Get<float>(kOpponentRefutationProbabilityId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
       kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)),
       kOpponentTactics(options.Get<float>(kOpponentTacticsId)) {}

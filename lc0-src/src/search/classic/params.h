@@ -303,6 +303,10 @@ class SearchParams : public BaseSearchParams {
   int GetOpponentRootScout() const { return kOpponentRootScout; }
   float GetOpponentMinProbability() const { return kOpponentMinProbability; }
   float GetOpponentBestLean() const { return kOpponentBestLean; }
+  float GetOpponentCaution() const { return kOpponentCaution; }
+  float GetOpponentRefutationProbability() const {
+    return kOpponentRefutationProbability;
+  }
   float GetOpponentDiscount() const { return kOpponentDiscount; }
   float GetOpponentEngineMix() const { return kOpponentEngineMix; }
   float GetOpponentTactics() const { return kOpponentTactics; }
@@ -314,6 +318,8 @@ class SearchParams : public BaseSearchParams {
   static const OptionId kOpponentRootScoutId;
   static const OptionId kOpponentMinProbabilityId;
   static const OptionId kOpponentBestLeanId;
+  static const OptionId kOpponentCautionId;
+  static const OptionId kOpponentRefutationProbabilityId;
   static const OptionId kOpponentDiscountId;
   static const OptionId kOpponentEngineMixId;
   static const OptionId kOpponentTacticsId;
@@ -324,6 +330,8 @@ class SearchParams : public BaseSearchParams {
   const int kOpponentRootScout;
   const float kOpponentMinProbability;
   const float kOpponentBestLean;
+  const float kOpponentCaution;
+  const float kOpponentRefutationProbability;
   const float kOpponentDiscount;
   const float kOpponentEngineMix;
   const float kOpponentTactics;
