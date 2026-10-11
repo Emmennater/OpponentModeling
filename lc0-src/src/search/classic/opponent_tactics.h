@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -43,6 +44,23 @@ struct TacticsMove {
 // implemented with Stockfish 11 (third_party/stockfish11). Thread-safe.
 std::vector<int> ScoreOpponentMoves(const std::string& fen,
                                     std::span<const TacticsMove> moves);
+
+// Writes moves in standard algebraic notation (SAN), for exporting the search
+// tree as PGN, with Stockfish 11's board. Moves are played with Push() and
+// taken back with Pop().
+class SanWriter {
+ public:
+  explicit SanWriter(const std::string& fen);
+  ~SanWriter();
+  // The move's SAN in the current position, or "" if it is not legal there.
+  std::string San(const TacticsMove& move) const;
+  void Push(const TacticsMove& move);
+  void Pop();
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace classic
 }  // namespace lczero

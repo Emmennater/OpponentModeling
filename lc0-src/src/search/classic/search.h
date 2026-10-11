@@ -132,6 +132,8 @@ class Search {
   // Returns verbose information about given node, as vector of strings.
   // Node can only be root or ponder (depth 1).
   std::vector<std::string> GetVerboseStats(const Node* node) const;
+  // Writes the search tree to TreeExportFile as PGN, if it is set.
+  void ExportTree() const REQUIRES(nodes_mutex_);
 
   // Returns the draw score at the root of the search. At odd depth pass true to
   // the value of @is_odd_depth to change the sign of the draw score.

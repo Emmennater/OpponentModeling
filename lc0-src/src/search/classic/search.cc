@@ -30,6 +30,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -573,6 +575,128 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
   return infos;
 }
 
+void Search::ExportTree() const REQUIRES(nodes_mutex_) {
+  const std::string path = params_.GetTreeExportFile();
+  if (path.empty() || !root_node_->HasChildren()) return;
+  const int max_depth = params_.GetTreeExportDepth();
+  const size_t width = params_.GetTreeExportWidth();
+  const uint32_t min_visits = std::max<uint32_t>(
+      1, static_cast<uint32_t>(params_.GetTreeExportMinShare() *
+                               root_node_->GetN()));
+  const int horizon = params_.GetOpponentHorizon();
+  // The opponent model chooses the moves at nodes of these depths, counting
+  // the root as 1 (see SearchWorker::OpponentModelAt).
+  auto opponent_at = [&](int depth) {
+    return opponent_backend_ && depth % 2 == 0 &&
+           (horizon == 0 || depth <= horizon);
+  };
+  auto to_tactics_move = [](Move move) {
+    return TacticsMove{
+        move.from().as_idx(), move.to().as_idx(),
+        move.is_promotion() ? move.promotion().ToString()[0] : '\0'};
+  };
+  auto percent = [](double x) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(x < 0.1 ? 1 : 0) << 100 * x << "%";
+    return oss.str();
+  };
+
+  const Position& root = played_history_.Last();
+  SanWriter san(PositionToFen(root));
+  std::string text;
+  auto add = [&](const std::string& token) {
+    if (!text.empty()) text += ' ';
+    text += token;
+  };
+  // ply: the game's half-move count at the node, even when White is to move.
+  std::function<void(const Node*, int, int, bool)> write =
+      [&](const Node* node, int depth, int ply, bool need_number) {
+        if (depth > max_depth) return;
+        std::vector<EdgeAndNode> moves;
+        for (const auto& edge : node->Edges()) {
+          if (edge.GetN() >= min_visits) moves.push_back(edge);
+        }
+        if (moves.empty()) return;
+        std::stable_sort(moves.begin(), moves.end(),
+                         [](const EdgeAndNode& a, const EdgeAndNode& b) {
+                           return a.GetN() > b.GetN();
+                         });
+        if (moves.size() > width) moves.resize(width);
+        const bool black = ply % 2 == 1;
+        const bool opponent = opponent_at(depth);
+        auto emit = [&](const EdgeAndNode& edge, bool number) {
+          if (number || !black) {
+            add(std::to_string(ply / 2 + 1) + (black ? "..." : "."));
+          }
+          add(san.San(to_tactics_move(edge.GetMove(black))));
+          // A node's value is for the side that just moved into it.
+          const float wl = edge.node()->GetWL();
+          const double white_score = (1.0 + (black ? -wl : wl)) / 2;
+          add(std::string("{") + (opponent ? "Maia " : "policy ") +
+              percent(edge.GetP()) + ", " + std::to_string(edge.GetN()) +
+              " visits (" +
+              percent(static_cast<double>(edge.GetN()) / node->GetN()) +
+              "), White " + percent(white_score) + "}");
+        };
+        const EdgeAndNode& main = moves[0];
+        emit(main, need_number);
+        for (size_t i = 1; i < moves.size(); ++i) {
+          add("(");
+          emit(moves[i], true);
+          san.Push(to_tactics_move(moves[i].GetMove(black)));
+          write(moves[i].node(), depth + 1, ply + 1, false);
+          san.Pop();
+          add(")");
+        }
+        san.Push(to_tactics_move(main.GetMove(black)));
+        write(main.node(), depth + 1, ply + 1, moves.size() > 1);
+        san.Pop();
+      };
+  // The half-move count from the FEN's move number and side to move.
+  const std::string root_fen = PositionToFen(root);
+  const bool root_black = root.IsBlackToMove();
+  const int root_ply =
+      2 * (std::stoi(root_fen.substr(root_fen.rfind(' ') + 1)) - 1) +
+      (root_black ? 1 : 0);
+  // The root's value is for the side that just moved, the other side.
+  const float root_wl = -root_node_->GetWL();
+  add("{Lc0 (OM) search tree: " + std::to_string(root_node_->GetN()) +
+      " visits, White's expected score " +
+      percent((1.0 + (root_black ? -root_wl : root_wl)) / 2) +
+      ". Each move: the opponent model's probability (Maia) at the "
+      "opponent's moves, the main network's (policy) at this engine's; its "
+      "visits and share of the position's; White's expected score after it, "
+      "with this engine's options.}");
+  write(root_node_, 1, root_ply, true);
+  add("*");
+
+  // Lines of at most 80 characters, broken at spaces.
+  std::string wrapped;
+  size_t line_start = 0;
+  for (size_t i = 0; i < text.size();) {
+    size_t next = text.find(' ', i);
+    if (next == std::string::npos) next = text.size();
+    if (next - line_start > 80 && i > line_start) {
+      wrapped.back() = '\n';
+      line_start = i;
+    }
+    wrapped.append(text, i, next - i);
+    if (next < text.size()) wrapped += ' ';
+    i = next + 1;
+  }
+
+  std::ofstream file(path);
+  if (!file) {
+    LOGFILE << "Could not write the search tree to " << path;
+    return;
+  }
+  file << "[Event \"Lc0 (OM) search tree\"]\n[Site \"?\"]\n"
+       << "[Date \"????.??.??\"]\n[Round \"-\"]\n[White \"?\"]\n"
+       << "[Black \"?\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \""
+       << PositionToFen(root) << "\"]\n\n"
+       << wrapped << "\n";
+}
+
 void Search::SendMovesStats() const REQUIRES(counters_mutex_) {
   auto move_stats = GetVerboseStats(root_node_);
 
@@ -639,6 +763,7 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
     SendMovesStats();
     BestMoveInfo info(final_bestmove_, final_pondermove_);
     uci_responder_->OutputBestMove(&info);
+    ExportTree();
     stopper_->OnSearchDone(stats);
     bestmove_is_sent_ = true;
     current_best_edge_ = EdgeAndNode();

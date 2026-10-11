@@ -604,6 +604,22 @@ const OptionId SearchParams::kOpponentSoundCautionId{
     "opponent's later mistakes. Then a move whose plausible refutation wins "
     "for the opponent loses value even when the line offers more traps "
     "later."};
+const OptionId SearchParams::kTreeExportFileId{
+    "tree-export-file", "TreeExportFile",
+    "After each search, the search tree is written to this file as PGN, its "
+    "most searched lines as variations, each move with its probability (the "
+    "opponent model's at the opponent's moves, the main network's at this "
+    "engine's), visits and White's expected score. Empty turns this off."};
+const OptionId SearchParams::kTreeExportDepthId{
+    "tree-export-depth", "TreeExportDepth",
+    "With TreeExportFile, how many half-moves deep the lines go."};
+const OptionId SearchParams::kTreeExportWidthId{
+    "tree-export-width", "TreeExportWidth",
+    "With TreeExportFile, at most this many moves from each position."};
+const OptionId SearchParams::kTreeExportMinShareId{
+    "tree-export-min-share", "TreeExportMinShare",
+    "With TreeExportFile, a move is written if it has at least this share of "
+    "the search's visits."};
 const OptionId SearchParams::kOpponentDiscountId{
     "opponent-discount", "OpponentDiscount",
     "With an opponent model, a result counts for this factor less for every "
@@ -732,6 +748,10 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 0;
   options->Add<BoolOption>(kOpponentSoundCautionId) = false;
+  options->Add<StringOption>(kTreeExportFileId) = "";
+  options->Add<IntOption>(kTreeExportDepthId, 1, 100) = 12;
+  options->Add<IntOption>(kTreeExportWidthId, 1, 100) = 4;
+  options->Add<FloatOption>(kTreeExportMinShareId, 0.0f, 1.0f) = 0.002f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.0f;

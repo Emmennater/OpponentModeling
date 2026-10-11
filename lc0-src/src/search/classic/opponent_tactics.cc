@@ -22,6 +22,7 @@
 #include "search/classic/opponent_tactics.h"
 
 #include <algorithm>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -152,6 +153,97 @@ std::vector<int> ScoreOpponentMoves(const std::string& fen,
     result.push_back(it == scores.end() ? 0 : it->second);
   }
   return result;
+}
+
+struct SanWriter::Impl {
+  Position pos;
+  // A deque, so that the states' addresses, which the position keeps, stay put.
+  std::deque<StateInfo> states;
+  std::vector<Move> played;
+
+  Move Find(const TacticsMove& move) {
+    const int key = Key(move.from, move.to, move.promotion);
+    for (const ExtMove& m : MoveList<LEGAL>(pos)) {
+      if (Key(m.move) == key) return m.move;
+    }
+    return MOVE_NONE;
+  }
+};
+
+SanWriter::SanWriter(const std::string& fen) : impl_(std::make_unique<Impl>()) {
+  InitStockfish();
+  impl_->states.emplace_back();
+  impl_->pos.set(fen, false, &impl_->states.back(), &ThisThread());
+}
+
+SanWriter::~SanWriter() = default;
+
+std::string SanWriter::San(const TacticsMove& move) const {
+  Position& pos = impl_->pos;
+  const Move m = impl_->Find(move);
+  if (m == MOVE_NONE) return "";
+  const Square from = from_sq(m);
+  const Square to = to_sq(m);
+  std::string san;
+  if (type_of(m) == CASTLING) {
+    san = to > from ? "O-O" : "O-O-O";
+  } else {
+    const PieceType pt = type_of(pos.moved_piece(m));
+    const bool capture = pos.capture(m);
+    if (pt == PAWN) {
+      if (capture) san += char('a' + file_of(from));
+    } else {
+      san += " PNBRQK"[pt];
+      // Disambiguation, by file if that is enough, then by rank, then both.
+      bool other = false, same_file = false, same_rank = false;
+      for (const ExtMove& e : MoveList<LEGAL>(pos)) {
+        const Square f = from_sq(e.move);
+        if (e.move == m || to_sq(e.move) != to || f == from ||
+            type_of(pos.moved_piece(e.move)) != pt ||
+            type_of(e.move) == CASTLING) {
+          continue;
+        }
+        other = true;
+        same_file |= file_of(f) == file_of(from);
+        same_rank |= rank_of(f) == rank_of(from);
+      }
+      if (other) {
+        if (!same_file) {
+          san += char('a' + file_of(from));
+        } else if (!same_rank) {
+          san += char('1' + rank_of(from));
+        } else {
+          san += char('a' + file_of(from));
+          san += char('1' + rank_of(from));
+        }
+      }
+    }
+    if (capture) san += 'x';
+    san += char('a' + file_of(to));
+    san += char('1' + rank_of(to));
+    if (type_of(m) == PROMOTION) {
+      san += '=';
+      san += " PNBRQK"[promotion_type(m)];
+    }
+  }
+  StateInfo st;
+  pos.do_move(m, st);
+  if (pos.checkers()) san += MoveList<LEGAL>(pos).size() ? '+' : '#';
+  pos.undo_move(m);
+  return san;
+}
+
+void SanWriter::Push(const TacticsMove& move) {
+  const Move m = impl_->Find(move);
+  impl_->states.emplace_back();
+  impl_->pos.do_move(m, impl_->states.back());
+  impl_->played.push_back(m);
+}
+
+void SanWriter::Pop() {
+  impl_->pos.undo_move(impl_->played.back());
+  impl_->played.pop_back();
+  impl_->states.pop_back();
 }
 
 }  // namespace classic
