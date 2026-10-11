@@ -27,7 +27,7 @@ Step 1 saves its targets as it goes and resumes where it stopped; steps 2 and
 3 always run (seconds and minutes). A summary is saved to
 lc0/finetune/summary.txt.
 
-Usage (about 30-60 minutes for the targets, 10-15 for the tests):
+Usage (the full pilot, 2,250 new targets plus the tests, took 10-15 minutes):
     .venv\\Scripts\\python tools\\finetune_value_head.py
 """
 
