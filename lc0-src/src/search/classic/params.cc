@@ -596,6 +596,14 @@ const OptionId SearchParams::kOpponentHorizonId{
     "opponent's likely play, not how a long game against the model would "
     "end: a mistake the opponent might make later no longer props up a line "
     "that gives material away now. 0 is no limit."};
+const OptionId SearchParams::kOpponentSoundCautionId{
+    "opponent-sound-caution", "OpponentSoundCaution",
+    "With OpponentCaution, a plausible reply is judged by where it leaves "
+    "this engine if the opponent also finds its best plausible replies "
+    "afterwards, instead of by its expected value, which counts on the "
+    "opponent's later mistakes. Then a move whose plausible refutation wins "
+    "for the opponent loses value even when the line offers more traps "
+    "later."};
 const OptionId SearchParams::kOpponentDiscountId{
     "opponent-discount", "OpponentDiscount",
     "With an opponent model, a result counts for this factor less for every "
@@ -723,6 +731,7 @@ void SearchParams::Populate(OptionsParser* options) {
       0.05f;
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 0;
+  options->Add<BoolOption>(kOpponentSoundCautionId) = false;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.0f;
@@ -827,6 +836,7 @@ SearchParams::SearchParams(const OptionsDict& options)
           options.Get<float>(kOpponentRefutationProbabilityId)),
       kOpponentCautionAhead(options.Get<float>(kOpponentCautionAheadId)),
       kOpponentHorizon(options.Get<int>(kOpponentHorizonId)),
+      kOpponentSoundCaution(options.Get<bool>(kOpponentSoundCautionId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
       kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)),
       kOpponentTactics(options.Get<float>(kOpponentTacticsId)) {}

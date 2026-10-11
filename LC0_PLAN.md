@@ -332,6 +332,21 @@ The engine values a line by how it would score, playing on itself, against the m
 
 But it did not help. With the settings of the `OpponentCautionAhead` test and `OpponentCautionAhead` 0.5, on the same 200 positions where the side to move is ahead, it ended below +1.5 in 4 at no horizon, and in 6, 6 and 5 at horizons 6, 10 and 16. The same settings without a horizon had given 6 in the earlier run, so the run-to-run noise is about two positions. Shorter horizons hurt the openings: at 6 the engine played `1.d4`, `5.Nxd4` in the Belgrade and `15.Rxe7+` at Halloween, and the Belgrade's `5.Nd5` − `5.Nxd4` gap with equal search was −0.022 and −0.013 at 6, −0.009 and −0.020 at 10, against +0.003 and +0.006 with no horizon. `8.dxe5` was avoided only at 6. The gambles found so far rest on the opponent going wrong within a few moves (Maia gives `10...Qc1+` only 17%), which no horizon removes. The option stays, off by default.
 
+### Tried: judging refutations by their sound value
+In the Two Knights line above, the refutation of `8.dxe5` is a chain: with Maia at 1900, `8...Bxg5` 80%, then after `10.Qxd5` the refuting `10...Qc1+` 28% (`10...Nc6` 65%), `11...Qxb2` 65% and `12...Qxa1` 95%, after which Black's queen on a1 can still be trapped (`13.Nc3`, where Maia gives the clean `13...Qb2` 10%). The engine valued the position after `10...Qc1+` at +0.04 for White and the one a rook down at +0.16, against −2.9 and −4.5 by Stockfish, so caution saw little to fear in the refutation. Raising the opponent's rating to 1900 did not change the choice. In a game from that line, the user, as Black, kept the advantage from move 12 to about move 29, and lost only after several later mistakes: the engine's hopes were for slow wins.
+
+So with `OpponentSoundCaution`, each node also keeps a sound value (in padding, so nodes stay 64 bytes): at opponent nodes the best plausible reply in full, at this engine's nodes its most searched move, with no later mistakes counted. Caution then judges a plausible reply by its sound value instead of its expected value. With ratings 1500, caution 0.15, discount 0.995, lean 1.0, `OpponentTactics` 0.5 and 300k nodes (the Belgrade gap with equal search at about 34k and 129k visits each):
+
+| Setting | Move 8 | `8.dxe5` | `8.Ne4` | Belgrade gap | Belgrade | Start | After `2...Nc6` |
+|---|---|---|---|---|---|---|---|
+| Off, `OpponentCautionAhead` 0.5 | `dxe5` | +0.34 | +0.29 | −0.011, −0.010 | `5.Nxd4` | `1.e4` | `3.Nc3` |
+| Sound, `OpponentCautionAhead` 0.5 | `Nf3` | −0.08 | −0.01 | −0.040, −0.118 | `5.Nxd4` | `1.Nf3` | `3.Bc4` |
+| Sound, `OpponentCautionAhead` 0 | `h4` | +0.06 | +0.13 | −0.034, −0.111 | `5.Nxd4` | `1.Nf3` | `3.Bc4` |
+| Sound, caution 0.08 | `Ne4` | +0.24 | +0.27 | −0.014, −0.089 | `5.Nxd4` | `1.d4` | `3.Nc3` |
+| Sound, refutation probability 0.25 | `h4` | +0.12 | +0.04 | −0.011, −0.023 | `5.Nxd4` | `1.e4` | `3.d4` |
+
+It removes `8.dxe5`, but it charges the Belgrade for its objective refutations too, and the engine turns to quieter openings. Lc0's own judgment barely separates the two: without the opponent model it values `5.Nd5` at −0.07 against +0.06 for `5.Nxd4`, and `8.dxe5` at −0.41 against −0.17 for `8.Ne4`, while Stockfish puts the costs at 0.24 and 2.8 pawns. The option stays, off by default.
+
 ### Tried and not kept: Gumbel selection below the root
 Below the root, this engine's moves are chosen by PUCT, which favors whichever move took the lead first. So the lines the search assumes may not be those the root would choose, and the line it shows often seemed to change once its moves came to be played. Gumbel MuZero (Danihelka et al., 2022), whose root rule is the sequential halving used here, chooses below the root by an improved policy instead: pi'(a) = softmax(log P(a) + sigma(q(a))), with sigma(q) = (50 + max N) × c_scale × q, q mapped to [0, 1], and unvisited moves valued at the prior-weighted mean of the visited ones. Visits go to the move furthest below its share of pi', as at opponent nodes.
 

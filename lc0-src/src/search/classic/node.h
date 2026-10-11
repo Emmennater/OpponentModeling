@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -213,6 +214,14 @@ class Node {
   void AdjustForTerminal(float v, float d, float m, int multivisit);
   // Opponent modeling: replaces Q's win-loss part (see OpponentBestLean).
   void SetWL(double wl) { wl_ = wl; }
+  // Opponent modeling: the value if the opponent finds its best plausible
+  // replies, without counting its later mistakes (see OpponentSoundCaution).
+  // Until it is set, and for terminal positions, it is the value itself.
+  float GetSoundWL() const {
+    return IsTerminal() || std::isnan(sound_wl_) ? static_cast<float>(wl_)
+                                                 : sound_wl_;
+  }
+  void SetSoundWL(float wl) { sound_wl_ = wl; }
   // Revert visits to a node which ended in a now reverted terminal.
   void RevertTerminalVisits(float v, float d, float m, int multivisit);
   // When search decides to treat one visit as several (in case of collisions
@@ -313,6 +322,8 @@ class Node {
   // but not finished). This value is added to n during selection which node
   // to pick in MCTS, and also when selecting the best move.
   uint32_t n_in_flight_ = 0;
+  // Opponent modeling: see GetSoundWL(). NaN until set.
+  float sound_wl_ = std::numeric_limits<float>::quiet_NaN();
 
   // 2 byte fields.
   // Index of this node is parent's edge list.

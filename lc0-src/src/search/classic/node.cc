@@ -319,6 +319,7 @@ void Node::MakeTerminal(GameResult result, float plies_left, Terminal type) {
 void Node::MakeNotTerminal() {
   terminal_type_ = Terminal::NonTerminal;
   n_ = 0;
+  sound_wl_ = std::numeric_limits<float>::quiet_NaN();
 
   // If we have edges, we've been extended (1 visit), so include children too.
   if (edges_) {

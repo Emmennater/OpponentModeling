@@ -2602,6 +2602,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
                                   ? params_.GetOpponentCautionAhead()
                                   : 0.0f;
   const bool cautious = caution > 0.0f || caution_ahead > 0.0f;
+  const bool sound_caution = cautious && params_.GetOpponentSoundCaution();
   const float discount = Discount();
 
   // Backup V value up to a root. After 1 visit, V = Q.
@@ -2633,55 +2634,78 @@ void SearchWorker::DoBackupUpdateSingleNode(
     // (see OpponentBestLean); where the opponent is, toward the opponent's
     // best plausible reply (see OpponentCaution), more so where this engine
     // is ahead (see OpponentCautionAhead). n is at parent_depth + 1. Beyond
-    // OpponentHorizon, values are averaged as in Lc0.
+    // OpponentHorizon, values are averaged as in Lc0. With
+    // OpponentSoundCaution, the sound value is recomputed alongside (see
+    // Node::GetSoundWL): the opponent's best plausible reply, counting a less
+    // likely one in proportion, and this engine's most searched move.
     if ((best_lean > 0.0f || cautious) && !n->IsTerminal() &&
         WithinHorizon(parent_depth + 1)) {
       const bool our_node = (parent_depth + 1) % 2 == 1;
       double weighted_wl = 0.0;
+      double weighted_sound = 0.0;
       uint32_t visits = 0;
       uint32_t most_visits = 0;
       double most_visited_wl = 0.0;
-      // The children: their values for the side to move at n, and for the
-      // opponent's replies, each one's plausibility (see OpponentCaution).
-      std::vector<std::pair<double, double>> replies;  // (value, plausibility)
+      double most_visited_sound = 0.0;
+      // The opponent's replies: their values and sound values for the side to
+      // move at n, and their plausibility (see OpponentCaution).
+      struct Reply {
+        double value;
+        double sound;
+        double plausibility;
+      };
+      std::vector<Reply> replies;
       for (Node* child : n->VisitedNodes()) {
         const uint32_t child_n = child->GetN();
+        const double sound = sound_caution ? child->GetSoundWL() : 0.0;
         weighted_wl += static_cast<double>(child_n) * child->GetWL();
+        weighted_sound += static_cast<double>(child_n) * sound;
         visits += child_n;
         if (child_n > most_visits) {
           most_visits = child_n;
           most_visited_wl = child->GetWL();
+          most_visited_sound = sound;
         }
         if (!our_node && cautious && child_n > 0) {
-          replies.emplace_back(
-              child->GetWL(),
-              plausible > 0.0f
-                  ? std::min(1.0, static_cast<double>(
-                                     child->GetOwnEdge()->GetP() / plausible))
-                  : 1.0);
+          replies.push_back(
+              {child->GetWL(), sound,
+               plausible > 0.0f
+                   ? std::min(1.0, static_cast<double>(
+                                      child->GetOwnEdge()->GetP() / plausible))
+                   : 1.0});
         }
       }
       if (visits > 0) {
         // The children's values are for the side to move at n, n's for the
         // other side, and a ply further from the game's end.
         double wl = weighted_wl / visits;
+        double sound = most_visited_sound;
         if (our_node) {
           wl += best_lean * (most_visited_wl - wl);
         } else {
           // The reply that, weighted by its plausibility, gains the opponent
           // most over the expected value: a reply at least
           // OpponentRefutationProbability likely counts fully, a less likely
-          // one in proportion, so that no refutation drops out at once.
+          // one in proportion, so that no refutation drops out at once. With
+          // OpponentSoundCaution, a reply's gain is judged by its sound value.
           double gain = 0.0;
-          for (const auto& [value, plausibility] : replies) {
-            gain = std::max(gain, plausibility * (value - wl));
+          const double mean_sound = weighted_sound / visits;
+          double sound_gain = 0.0;
+          for (const auto& reply : replies) {
+            gain = std::max(
+                gain, reply.plausibility *
+                          ((sound_caution ? reply.sound : reply.value) - wl));
+            sound_gain = std::max(
+                sound_gain, reply.plausibility * (reply.sound - mean_sound));
           }
+          sound = mean_sound + sound_gain;
           // wl is the opponent's, so this engine is ahead where it is below 0
           const double node_caution =
               std::min(1.0, caution + caution_ahead * std::max(0.0, -wl));
           wl += node_caution * gain;
         }
         n->SetWL(-wl * discount);
+        if (sound_caution) n->SetSoundWL(-sound * discount);
       }
     }
     if (n->GetN() >= solid_threshold) {
