@@ -335,6 +335,23 @@ Checked so far:
 
 So a fine-tuned value head, trained in PyTorch with the body frozen, can be written back into the native weights file and played at full speed. Training data would come from this engine's games against a Maia opponent of somewhat higher rating than the one modeled, so that the network does not learn to rely on one model's particular mistakes.
 
+**Pilot: learnable, but no better decisions.** [tools/finetune_value_head.py](tools/finetune_value_head.py) took 3,000 positions from real games, all phases, and used as targets the opponent-model search's values: 5,000 nodes, opponent and own rating 1700, caution 0.15, no lean or discount. It trained the value head's two fully connected layers on 80% of the positions, with the body and the value convolution frozen, and wrote them into a copy of the network.
+
+On the other 20%, predicting the search's value (W − L):
+
+| Head | Correlation | Mean absolute error |
+|---|---|---|
+| Original | 0.936 | 0.172 |
+| Original, rescaled to fit | 0.936 | 0.133 |
+| Fine-tuned | 0.965 | 0.092 |
+
+So the values are learnable beyond an offset. But with the test settings (ratings 1500, caution 0.15, discount 0.995, lean 1.0), the fine-tuned network decided no better:
+- **Belgrade, equal search:** the gap `5.Nd5` − `5.Nxd4` was +0.006, +0.010 and +0.017 at about 9k, 34k and 129k visits each, against −0.006, +0.013 and +0.030 for the original. At 100k nodes it played `5.Nxd4`.
+- **Halloween, move 8:** it played the unsound `8.Nxd5` again.
+- **Other choices:** `1.d4` from the start and `2.d4` after `1...e5`.
+
+Trained on the search's own values, the network takes on the search's optimism in every evaluation, and the search compounds it. The original network's choices also varied between runs in close positions (`2.Nf3` after `1...e5`, `8.exd6` at Halloween move 8), but that does not explain the Belgrade and `8.Nxd5` together. Training on game results against a stronger Maia would avoid using the search's values, but would need thousands of games for a noisy signal. The fine-tuning was not pursued further.
+
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.
 - **Calibration.** A previous project reweighted Maia's probabilities with a low-depth Stockfish evaluation, moving part of a move's probability to the evaluation's best move by `max_rate × (1 − exp(−loss / scale_cp))`, to suppress blunders a quick look would catch. Whether that predicts real moves better can be measured offline with the measurement tool before building it in. Building it in would need a low-depth evaluation of every candidate at each new opponent node, either a Stockfish evaluator compiled into Lc0 (CPU) or the main network's evaluation of the candidate positions (GPU). **Resolved: not needed.** Measured on 7,451 positions from full blitz and rapid games between players rated 1200–1399, raw Maia3-23M at temperature 1.0 already matches how often players blunder, in the opening, the middlegame and late in the game. No calibration setting predicted moves better (see "Tuning the calibration" in [MEASUREMENTS.md](MEASUREMENTS.md)).
