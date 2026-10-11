@@ -64,6 +64,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentBestLean` (added later, see "Sharp moves need more search"): how far the value of a position where the engine is to move leans from the average of the moves searched there toward the most searched move's value, 0 by default.
 - `OpponentDiscount` (added later, see "Sharp moves need more search"): how much less a result counts for each half-move until the game ends, 1 (off) by default.
 - `OpponentEngineMix` (added later, see "Sharp moves need more search"): the share of the main network's move probabilities mixed into the opponent model's, 0 by default.
+- `OpponentTactics` (added later, see "Sharp moves need more search"): how much of a quick tactical look the modeled opponent takes, 0 by default.
 - `OpponentMinProbability` (added later, see "Sharp moves need more search"): opponent moves the model gives less than this probability are taken as never played, as in the Stockfish version's threshold. 0 by default, which keeps every move.
 
 ### What stays the same
@@ -237,6 +238,35 @@ Root searches, 300k nodes (100k in the Belgrade position):
 | Test game | `6.e4`, `8.Bxa6` | `6.e4`, `8.Bxa6` | `6.e4`, `8.Bxa6` |
 
 From the start position, `1.e4` now wins with every setting, by 0.04 to 0.06 over `1.d4`. Without the mix, `1.d4` and `1.e4` had been within 0.01. In the game-report position, the traps `19...Rd3` and `19...Rd5` still beat the safe `19...Re7`: a sharper opponent finds `20.Bf4` more often, but the engine still expects to win most of the positions after it.
+
+The main network's instincts are mostly positional, though. On the full-game positions, its probability on the best move beats Maia's by 6.8 points in quiet positions (where the best move leads the next by under 50 cp), but only 1.2 points where the best move leads by 500 cp or more, where it is no better than the players. So the mix mainly makes the opponent defend better positionally.
+
+**A tactical look for the opponent.** Tactics need search. The reweighting from StockfishTrapFinder's `MaiaModel` moves part of each move's probability to a shallow search's best move, more the more the move loses. It acts little in quiet positions, where moves lose little, and strongly where one move is clearly best. The players' and Maia's probability on the best move, and the gain from reweighting at rate 0.7 with a loss scale of 300 cp:
+
+| Best move's lead | Players | Maia | Material only, captures | Material, two plies | Stockfish 11, depth 1 | Stockfish 11, depth 2 |
+|---|---|---|---|---|---|---|
+| 0-50 cp | 25.7% | 24.6% | +0.6 | +0.8 | +1.8 | +1.3 |
+| 200-500 cp | 57.8% | 60.2% | +3.9 | +5.0 | +8.0 | +7.5 |
+| 500+ cp | 76.1% | 74.9% | +4.3 | +7.8 | +10.9 | +10.2 |
+
+Stockfish 11 is the last Stockfish with a hand-written evaluation (material, piece placement, mobility, king safety, pawns), closer to a club player's judgment than a network's. At depth 1 it gives the largest tactical gain, while quiet positions move about as little as with the others. Depth 2 adds nothing.
+
+So `OpponentTactics` scores every move at each new opponent node with a depth-1 search: the move, then the capture sequences (all moves in check), with captures that lose material by exchange skipped, judged by Stockfish 11's classical evaluation. The opponent model's probabilities are then reweighted with the option as the rate. Stockfish 11's board, move generation and evaluation are built into Lc0 from [lc0-src/third_party/stockfish11/](lc0-src/third_party/stockfish11/README.md), behind `ScoreOpponentMoves` in `opponent_tactics.cc`. Its scores match the Stockfish 11 engine's at depth 1.
+
+Two limits:
+- **Misreading opening traps.** After `1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4 4.Nxe5`, Maia gives `4...Qg5`, which wins material, 96%. Depth 1 sees `5.Nxf7`, attacking the queen and rook, and scores `4...Qg5` at −305 against −120 for `4...Nh6`, so at rate 1.0 `4...Qg5` drops to 52%. Stockfish 11 needs depth 3 to rank it best, which would cost 50 to 100 times as much.
+- **Little to add in the opening.** By phase, at rate 0.7, on big shots (200+ cp): in the opening, players 72.6%, Maia 74.4%, reweighted 80.3%; in the middlegame, 70.3%, 69.3% and 77.8%; late in the game, 57.6%, 60.1% and 73.3%. Maia, which has seen the common traps many times, is already as sharp as the players in the opening.
+
+Opening tests, with discount 0.995 and `OpponentBestLean` 1.0, 300k nodes (100k in the Belgrade position):
+
+| Position | `OpponentTactics` 0 | 0.5 | 1.0 |
+|---|---|---|---|
+| Start | `1.e4` 0.387, `1.d4` 0.354 | `1.e4` 0.358, `1.d4` 0.346 | `1.e4` 0.387, `1.d4` 0.384 |
+| Belgrade | `5.Nd5` | `5.Nd5` | `5.Nd5` |
+| `1.e4 e5 2.Nf3 Nc6` | `3.Nc3` | `3.d4` | `3.d4` |
+| `1.e4 c5` | `2.d4` | `2.d4` | `2.Nf3` |
+
+It costs about 15 to 25% of the speed.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

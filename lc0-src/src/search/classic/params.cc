@@ -570,6 +570,14 @@ const OptionId SearchParams::kOpponentEngineMixId{
     "probabilities mixed into the opponent model's, which makes the modeled "
     "opponent stronger, tactics included: 0 is the opponent model alone, 1 "
     "the main network alone."};
+const OptionId SearchParams::kOpponentTacticsId{
+    "opponent-tactics", "OpponentTactics",
+    "With an opponent model, how much the modeled opponent sees of the "
+    "tactics a quick look shows: each of its moves is scored by a depth-1 "
+    "search with Stockfish 11's classical evaluation, and up to this share "
+    "of a move's probability goes to the best-scoring move, more the more "
+    "the move loses. Quiet moves, which win or lose little, are left almost "
+    "as the opponent model has them. 0 turns this off."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -672,6 +680,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
+  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.0f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
@@ -768,6 +777,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentMinProbability(options.Get<float>(kOpponentMinProbabilityId)),
       kOpponentBestLean(options.Get<float>(kOpponentBestLeanId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
-      kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)) {}
+      kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)),
+      kOpponentTactics(options.Get<float>(kOpponentTacticsId)) {}
 }  // namespace classic
 }  // namespace lczero

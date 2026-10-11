@@ -37,6 +37,7 @@
 #include <thread>
 
 #include "neural/encoder.h"
+#include "search/classic/opponent_tactics.h"
 #include "search/classic/node.h"
 #include "utils/fastmath.h"
 #include "utils/random.h"
@@ -1641,6 +1642,21 @@ void SearchWorker::ProcessPickedTask(int start_idx, int end_idx,
                   },
                   picked_node.opponent_eval->AsPtr()) ==
               BackendComputation::FETCHED_IMMEDIATELY;
+          // A quick tactical look at each of the opponent's moves, on the
+          // absolute board (see OpponentTactics).
+          if (params_.GetOpponentTactics() > 0.0f) {
+            std::vector<TacticsMove> moves;
+            moves.reserve(legal_moves.size());
+            const bool black_to_move = history.IsBlackToMove();
+            for (Move move : legal_moves) {
+              if (black_to_move) move.Flip();
+              moves.push_back(
+                  {move.from().as_idx(), move.to().as_idx(),
+                   move.is_promotion() ? move.promotion().ToString()[0] : '\0'});
+            }
+            picked_node.tactics_scores =
+                ScoreOpponentMoves(PositionToFen(history.Last()), moves);
+          }
         }
       }
     }
@@ -2478,6 +2494,33 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
     for (size_t i = 0; i < policy.size(); ++i) {
       policy[i] += engine_mix * (engine_policy[i] - policy[i]);
     }
+  }
+  // The opponent sees some of the tactics a quick look shows: each move gives
+  // up to OpponentTactics of its probability to the best-scoring move, more
+  // the more it loses, as in StockfishTrapFinder's MaiaModel. Measured on
+  // real games, the opponent then finds clear tactical shots more often,
+  // while quiet positions change little (see LC0_PLAN.md).
+  const auto& tactics_scores = node_to_process->tactics_scores;
+  if (!tactics_scores.empty() && tactics_scores.size() == policy.size()) {
+    constexpr float kLossScaleCp = 300.0f;
+    const float max_rate = params_.GetOpponentTactics();
+    size_t best = 0;
+    for (size_t i = 1; i < policy.size(); ++i) {
+      if (tactics_scores[i] > tactics_scores[best] ||
+          (tactics_scores[i] == tactics_scores[best] &&
+           policy[i] > policy[best])) {
+        best = i;
+      }
+    }
+    float caught = 0.0f;
+    for (size_t i = 0; i < policy.size(); ++i) {
+      const float loss = static_cast<float>(tactics_scores[best] -
+                                            tactics_scores[i]);
+      const float rate = max_rate * (1.0f - std::exp(-loss / kLossScaleCp));
+      caught += policy[i] * rate;
+      policy[i] *= 1.0f - rate;
+    }
+    policy[best] += caught;
   }
   // Moves below OpponentMinProbability are taken as never played. A move
   // with probability 0 gets no visits at an opponent node.

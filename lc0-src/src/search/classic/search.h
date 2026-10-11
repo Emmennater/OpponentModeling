@@ -378,6 +378,9 @@ class SearchWorker {
     std::unique_ptr<EvalResult> opponent_eval;
     bool opponent_queried = false;
     bool opponent_cache_hit = false;
+    // Opponent modeling: the opponent's moves' scores from a quick tactical
+    // look, in centipawns for the opponent (see OpponentTactics).
+    std::vector<int> tactics_scores;
     // Only populated for visits,
     std::vector<Move> moves_to_visit;
 

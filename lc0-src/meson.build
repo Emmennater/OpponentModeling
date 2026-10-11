@@ -857,8 +857,23 @@ configure_file(output : 'default_backend.h',
 
 if get_option('lc0')
   files += common_files
+  # Opponent modeling: Stockfish 11's board, move generation and classical
+  # evaluation, for the opponent's quick look at tactics (OpponentTactics).
+  stockfish11_dir = 'third_party/stockfish11/'
+  stockfish11 = static_library('stockfish11',
+       'src/search/classic/opponent_tactics.cc',
+       stockfish11_dir + 'bitbase.cpp', stockfish11_dir + 'bitboard.cpp',
+       stockfish11_dir + 'endgame.cpp', stockfish11_dir + 'evaluate.cpp',
+       stockfish11_dir + 'material.cpp', stockfish11_dir + 'misc.cpp',
+       stockfish11_dir + 'movegen.cpp', stockfish11_dir + 'pawns.cpp',
+       stockfish11_dir + 'position.cpp', stockfish11_dir + 'psqt.cpp',
+       include_directories: [include_directories('src'),
+                             include_directories('third_party/stockfish11')],
+       cpp_args: ['-DUSE_POPCNT'],
+       override_options: ['warning_level=0'])
   executable('lc0', 'src/main.cc',
-       files, include_directories: includes, dependencies: deps, install: true)
+       files, include_directories: includes, dependencies: deps,
+       link_with: stockfish11, install: true)
 endif
 
 #############################################################################
