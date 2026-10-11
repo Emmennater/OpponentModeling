@@ -2606,8 +2606,15 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
     return;
   }
   // Opponent modeling: a result counts less the more plies until the game
-  // ends (see OpponentDiscount), here estimated by the moves-left head.
-  if (const float discount = Discount(); discount < 1.0f) {
+  // ends (see OpponentDiscount), here estimated by the moves-left head. With
+  // OpponentWinValue, a value at or beyond it counts as a win or loss instead,
+  // and the discount counts only the plies from the root, applied in backup.
+  const float win_value =
+      search_->opponent_backend_ ? params_.GetOpponentWinValue() : 1.0f;
+  if (win_value < 1.0f) {
+    node_to_process->eval->q =
+        std::clamp(node_to_process->eval->q / win_value, -1.0f, 1.0f);
+  } else if (const float discount = Discount(); discount < 1.0f) {
     node_to_process->eval->q *=
         std::pow(discount, std::max(0.0f, node_to_process->eval->m));
   }

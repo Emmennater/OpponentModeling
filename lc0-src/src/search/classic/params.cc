@@ -604,6 +604,15 @@ const OptionId SearchParams::kOpponentSoundCautionId{
     "opponent's later mistakes. Then a move whose plausible refutation wins "
     "for the opponent loses value even when the line offers more traps "
     "later."};
+const OptionId SearchParams::kOpponentWinValueId{
+    "opponent-win-value", "OpponentWinValue",
+    "With an opponent model, the main network's value (W - L, from -1 to 1) "
+    "from which a position counts as won, as one a player of the modeled "
+    "strength wins easily from: values are scaled by 1 / this, up to a win "
+    "or a loss. OpponentDiscount then counts the half-moves from the current "
+    "position to where a line is evaluated, instead of to the predicted end "
+    "of the game, so that a line is worth more the sooner it reaches an "
+    "easily won position. 1 turns this off."};
 const OptionId SearchParams::kTreeExportFileId{
     "tree-export-file", "TreeExportFile",
     "After each search, the search tree is written to this file as PGN: this "
@@ -749,6 +758,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 0;
   options->Add<BoolOption>(kOpponentSoundCautionId) = false;
+  options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
   options->Add<StringOption>(kTreeExportFileId) = "";
   options->Add<IntOption>(kTreeExportDepthId, 1, 100) = 12;
   options->Add<IntOption>(kTreeExportWidthId, 1, 100) = 4;
@@ -858,6 +868,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentCautionAhead(options.Get<float>(kOpponentCautionAheadId)),
       kOpponentHorizon(options.Get<int>(kOpponentHorizonId)),
       kOpponentSoundCaution(options.Get<bool>(kOpponentSoundCautionId)),
+      kOpponentWinValue(options.Get<float>(kOpponentWinValueId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
       kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)),
       kOpponentTactics(options.Get<float>(kOpponentTacticsId)) {}
