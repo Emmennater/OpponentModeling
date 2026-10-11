@@ -313,6 +313,20 @@ With caution 0.3 and the threshold at 5%: `8.Qxd5` and `15.Bg7` again, `1.e4`, `
 
 With caution 0.15 the start position (`1.e4`), `3.Nc3` after `2...Nc6`, `2.d4` after `1...c5` and the mate in 2 are unchanged. So 0.15 is the suggested setting.
 
+**More caution when ahead (`OpponentCautionAhead`).** A result is at most a win, so once the engine is well ahead against the model, a line that gives the advantage back for a likely mistake scores about the same as one that keeps it, and noise decides. In the Belgrade line `5.Nd5 Nxe4 6.Qe2 f5 7.Ng5 d6 8.Nxe4 fxe4 9.Qxe4+ Be7 10.Bg5 h6 11.Bh4 g5`, with ratings 1400, caution 0.15, discount 0.995, lean 1.0 and `OpponentTactics` 0.5, it played `12.Be2` (Stockfish 0.00) over `12.Bg3` (+3.6) at 300k nodes, +0.852 against +0.845. Without the opponent model the two were +0.04 and +0.78. The risk is lopsided too: the sacrifice could gain at most about 0.15, and lose about 0.8 wherever the model is wrong about the position. So at each position where the opponent is to move, the caution is raised by `OpponentCautionAhead` times this engine's expected result there, when that is positive. In this line, at 0.25, 0.5 and 1.0 the engine played `12.Bg3` by 0.013, `12.Bg3` by 0.115, and `12.Bb5`, and at 1.0 the Belgrade gave way to `5.Nxd4`.
+
+[tools/test_caution_ahead.py](tools/test_caution_ahead.py) took 200 positions from real games, in every phase, where the side to move is ahead by 1.5 to 10 pawns (Stockfish, depth 12), and scored the engine's moves at 50k nodes with the settings above (Stockfish, depth 16):
+
+| `OpponentCautionAhead` | Drop of 1+ pawns | Drop of 2+ | Ended below +1.5 | Lost over half the advantage, ending below +3 | A different move than at 0 |
+|---|---|---|---|---|---|
+| 0 | 21 | 7 | 15 | 11 | — |
+| 0.25 | 16 | 3 | 10 | 8 | 18.5% |
+| 0.5 | 10 | 4 | 6 | 5 | 29% |
+
+Most drops of 2+ pawns at 0.5 were in positions won either way (+12.9 to +9.1, mate to +9.3, +9.4 to +7.5). Those at 0 included giving back most of the advantage early in the game: +3.3 to +0.2 at ply 8, +5.8 to +2.3 at ply 12, +1.8 to +0.2 at ply 18, which 0.25 or 0.5 kept. The counts are small, and the run-to-run noise was not measured, but they fall steadily with the option.
+
+The cost is the Belgrade's margin: with equal search, `5.Nd5` − `5.Nxd4` was +0.025 and +0.033 at about 34k and 129k visits each at 0, +0.009 and +0.021 at 0.25, and +0.002 and +0.006 at 0.5. All three still played `5.Nd5` at 100k nodes, `1.e4`, `2.d4` after `1...e5`, `2.Nf3` after `1...c5`, `11.Qxe8` in the line above, `8.Qxd5` and `15.Bg7` at Halloween, and the mate in 2. After `2...Nc6` it played `3.d4` at 0 and 0.25, and `3.Bc4` at 0.5.
+
 ### Tried and not kept: Gumbel selection below the root
 Below the root, this engine's moves are chosen by PUCT, which favors whichever move took the lead first. So the lines the search assumes may not be those the root would choose, and the line it shows often seemed to change once its moves came to be played. Gumbel MuZero (Danihelka et al., 2022), whose root rule is the sequential halving used here, chooses below the root by an improved policy instead: pi'(a) = softmax(log P(a) + sigma(q(a))), with sigma(q) = (50 + max N) × c_scale × q, q mapped to [0, 1], and unvisited moves valued at the prior-weighted mean of the visited ones. Visits go to the move furthest below its share of pi', as at opponent nodes.
 
