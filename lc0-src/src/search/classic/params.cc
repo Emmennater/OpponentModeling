@@ -787,7 +787,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 1.0f) = 0.0f;
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 1000;
-  options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 8;
+  options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 4;
   options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 4;
   options->Add<StringOption>(kOpponentStockfishPathId) = "";
   options->Add<StringOption>(kTreeExportFileId) = "";
