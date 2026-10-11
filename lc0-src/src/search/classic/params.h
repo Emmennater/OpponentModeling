@@ -300,6 +300,7 @@ class SearchParams : public BaseSearchParams {
   }
   int GetSolidTreeThreshold() const { return kSolidTreeThreshold; }
   int GetOpponentRootCandidates() const { return kOpponentRootCandidates; }
+  int GetOpponentRootScout() const { return kOpponentRootScout; }
   float GetOpponentMinProbability() const { return kOpponentMinProbability; }
   float GetOpponentBestLean() const { return kOpponentBestLean; }
   float GetOpponentDiscount() const { return kOpponentDiscount; }
@@ -310,6 +311,7 @@ class SearchParams : public BaseSearchParams {
   static const OptionId kMaxPrefetchBatchId;
   static const OptionId kSolidTreeThresholdId;
   static const OptionId kOpponentRootCandidatesId;
+  static const OptionId kOpponentRootScoutId;
   static const OptionId kOpponentMinProbabilityId;
   static const OptionId kOpponentBestLeanId;
   static const OptionId kOpponentDiscountId;
@@ -319,6 +321,7 @@ class SearchParams : public BaseSearchParams {
  private:
   const int kSolidTreeThreshold;
   const int kOpponentRootCandidates;
+  const int kOpponentRootScout;
   const float kOpponentMinProbability;
   const float kOpponentBestLean;
   const float kOpponentDiscount;

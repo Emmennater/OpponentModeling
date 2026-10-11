@@ -543,6 +543,13 @@ const OptionId SearchParams::kOpponentRootCandidatesId{
     "model a move's value tends to rise as it is searched deeper, so the usual "
     "rule, which gives most visits to the move that looks best, favors "
     "whichever move took the lead first. 0 or 1 turns this off."};
+const OptionId SearchParams::kOpponentRootScoutId{
+    "opponent-root-scout", "OpponentRootScout",
+    "With an opponent model, the root visits made with Lc0's usual rule "
+    "before sequential halving starts (see OpponentRootCandidates). The "
+    "usual rule tries moves the main network rates low too, and the "
+    "candidates are the moves it visited most, so a forcing move such as a "
+    "sacrifice that mates can become one."};
 const OptionId SearchParams::kOpponentMinProbabilityId{
     "opponent-min-probability", "OpponentMinProbability",
     "With an opponent model, the opponent's moves the model gives less than "
@@ -676,6 +683,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kMaxPrefetchBatchId, 0, 1024) = DEFAULT_MAX_PREFETCH;
   options->Add<IntOption>(kSolidTreeThresholdId, 1, 2000000000) = 100;
   options->Add<IntOption>(kOpponentRootCandidatesId, 0, 64) = 8;
+  options->Add<IntOption>(kOpponentRootScoutId, 0, 1000000) = 1000;
   options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.0f;
   options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
@@ -774,6 +782,7 @@ SearchParams::SearchParams(const OptionsDict& options)
     : BaseSearchParams(options),
       kSolidTreeThreshold(options.Get<int>(kSolidTreeThresholdId)),
       kOpponentRootCandidates(options.Get<int>(kOpponentRootCandidatesId)),
+      kOpponentRootScout(options.Get<int>(kOpponentRootScoutId)),
       kOpponentMinProbability(options.Get<float>(kOpponentMinProbabilityId)),
       kOpponentBestLean(options.Get<float>(kOpponentBestLeanId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),

@@ -900,28 +900,42 @@ void Search::StartRootHalvingRun() {
 void Search::UpdateRootHalving() {
   auto& halving = root_halving_;
   if (!halving.initialized) {
-    if (!opponent_backend_ || params_.GetOpponentRootCandidates() < 2 ||
-        root_node_->GetN() == 0 || !root_node_->HasChildren()) {
-      // Set up later, once the root is expanded, or never.
-      if (!opponent_backend_ || params_.GetOpponentRootCandidates() < 2) {
-        halving.initialized = true;
-      }
+    // Set up later, once the root is expanded and scouted, or never. While
+    // scouting, the root uses Lc0's usual rule, which also tries moves the
+    // main network rates low: a rook sacrifice mating in 2, with a prior of
+    // 1.5%, was otherwise never a candidate and never searched.
+    if (!opponent_backend_ || params_.GetOpponentRootCandidates() < 2) {
+      halving.initialized = true;
+      return;
+    }
+    if (root_node_->GetN() == 0 || !root_node_->HasChildren() ||
+        root_node_->GetN() <
+            static_cast<uint32_t>(params_.GetOpponentRootScout())) {
       return;
     }
     halving.initialized = true;
-    // Edges are sorted by prior, highest first.
+    // The candidates are the moves scouting visited most, highest prior
+    // first among moves visited as often.
+    std::vector<std::pair<uint32_t, int>> visits;  // (visits, edge index)
     int index = 0;
     for (const auto& edge : root_node_->Edges()) {
       if (root_move_filter_.empty() ||
           std::find(root_move_filter_.begin(), root_move_filter_.end(),
                     edge.GetMove()) != root_move_filter_.end()) {
-        halving.initial.push_back(index);
+        visits.emplace_back(edge.GetN(), index);
       }
+      ++index;
+    }
+    // Edges are sorted by prior, highest first, so a stable sort by visits
+    // keeps that order among moves visited as often.
+    std::stable_sort(visits.begin(), visits.end(),
+                     [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& [n, edge_index] : visits) {
       if (static_cast<int>(halving.initial.size()) ==
           params_.GetOpponentRootCandidates()) {
         break;
       }
-      ++index;
+      halving.initial.push_back(edge_index);
     }
     if (halving.initial.size() < 2) {
       halving.initial.clear();
