@@ -1369,6 +1369,17 @@ void Search::DeepTacticsThread() {
       if (!node) break;
     }
     if (!node || node->GetNumEdges() != scores.size()) continue;
+    {
+      std::ostringstream oss;
+      oss << "Deep tactics " << request.fen << ":";
+      for (size_t i = 0; i < scores.size(); ++i) {
+        const TacticsMove& m = request.moves[i];
+        oss << " " << char('a' + m.from % 8) << char('1' + m.from / 8)
+            << char('a' + m.to % 8) << char('1' + m.to / 8) << " "
+            << scores[i];
+      }
+      LOGFILE << oss.str();
+    }
     // As with OpponentTactics, up to max_rate of each move's probability goes
     // to the best-scoring move, more the more the move loses.
     std::vector<float> policy;
