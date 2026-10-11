@@ -557,6 +557,13 @@ const OptionId SearchParams::kOpponentBestLeanId{
     "toward the value of the most searched move: 0 is the average, as in "
     "Lc0, and 1 the most searched move. Values are then recomputed from the "
     "moves below each position as they are passed up the tree."};
+const OptionId SearchParams::kOpponentDiscountId{
+    "opponent-discount", "OpponentDiscount",
+    "With an opponent model, a result counts for this factor less for every "
+    "half-move until the game ends, so that a quick win is worth more than a "
+    "slow one, and a late loss less than an early one. The game's end is "
+    "estimated with the network's moves-left head, so a line is not "
+    "discounted for being searched deeper. 1 turns this off."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -657,6 +664,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kOpponentRootCandidatesId, 0, 64) = 8;
   options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.0f;
   options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 0.0f;
+  options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
@@ -751,6 +759,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kSolidTreeThreshold(options.Get<int>(kSolidTreeThresholdId)),
       kOpponentRootCandidates(options.Get<int>(kOpponentRootCandidatesId)),
       kOpponentMinProbability(options.Get<float>(kOpponentMinProbabilityId)),
-      kOpponentBestLean(options.Get<float>(kOpponentBestLeanId)) {}
+      kOpponentBestLean(options.Get<float>(kOpponentBestLeanId)),
+      kOpponentDiscount(options.Get<float>(kOpponentDiscountId)) {}
 }  // namespace classic
 }  // namespace lczero

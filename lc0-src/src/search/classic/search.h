@@ -28,6 +28,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <condition_variable>
 #include <functional>
 #include <optional>
@@ -457,6 +458,21 @@ class SearchWorker {
   int PrefetchIntoCache(Node* node, int budget, bool is_odd_depth);
   void DoBackupUpdateSingleNode(const NodeToProcess& node_to_process);
   // Returns whether a node's bounds were set based on its children.
+  // Opponent modeling: the discount per half-move (see OpponentDiscount), or 1
+  // when off. It needs the network's moves-left head to place the game's end.
+  float Discount() const {
+    return search_->opponent_backend_ && search_->backend_attributes_.has_mlh
+               ? params_.GetOpponentDiscount()
+               : 1.0f;
+  }
+  // Opponent modeling: discounts a node that was just made terminal by the
+  // plies to the game's end, so that it compares with discounted values.
+  void DiscountTerminal(Node* node) const {
+    const float discount = Discount();
+    if (discount < 1.0f && node->GetWL() != 0.0f) {
+      node->SetWL(node->GetWL() * std::pow(discount, node->GetM()));
+    }
+  }
   // At an opponent node (opponent_node), the opponent's move is not chosen
   // but drawn from the opponent model, so the node is proven only when all
   // its moves lead to the same proven result.

@@ -62,6 +62,7 @@ That cost the engine its endings. With no proven mates, every winning move in a 
 - `OpponentRootCandidates` (added later, see "Choosing the move at the root"): the number of root moves compared by sequential halving, 8 by default. 0 or 1 uses Lc0's usual rule.
 - `OpponentTreeReuse` (added later, see "Choosing the move at the root"): whether a search keeps the previous search's tree, off by default.
 - `OpponentBestLean` (added later, see "Sharp moves need more search"): how far the value of a position where the engine is to move leans from the average of the moves searched there toward the most searched move's value, 0 by default.
+- `OpponentDiscount` (added later, see "Sharp moves need more search"): how much less a result counts for each half-move until the game ends, 1 (off) by default.
 - `OpponentMinProbability` (added later, see "Sharp moves need more search"): opponent moves the model gives less than this probability are taken as never played, as in the Stockfish version's threshold. 0 by default, which keeps every move.
 
 ### What stays the same
@@ -195,6 +196,33 @@ Root searches at 1.0:
 The costs:
 - **Values run higher:** for example 0.70 from the start position against 0.53, and about 0.99 in won positions, where they leave less room to tell moves apart. In the game-report position, both settings preferred `19...Rd3`, a trap like `19...Rd5`: Stockfish gives it +0.12 after `20.Bf4`, against +6.33 for `19...Re7`.
 - **Speed:** the recomputation iterates over each position's children, which costs about 25%.
+
+**Winning sooner: discounting.** Against an opponent who keeps making mistakes, almost every reasonable position is won eventually. So the more a move is searched, the more future mistakes are found, and the value of every decent move creeps toward 1, where it no longer tells moves apart. The goal is to win soon, so with `OpponentDiscount` below 1, a result counts for that factor less for every half-move until the game ends.
+
+The end of the game is placed with the network's moves-left head:
+- **Network evaluations:** a position's evaluation v, with M half-moves estimated to be left, counts as v × discount^M.
+- **Each step up the tree:** the value is multiplied by the discount once more, so a leaf's value at the root is discounted by its depth plus its moves left. That is an estimate of when the game ends, whatever depth the search stopped at. Discounting by depth in the tree alone would penalize lines for being searched more.
+- **Proven results:** a mate in M half-moves counts as ±discount^M instead of ±1.
+
+Moves left are averaged up the tree like values, so they reflect how quickly the opponent model's player is expected to collapse. Values still rise as the search finds quicker wins, but a rise now means an earlier expected end.
+
+The gap `5.Nd5` − `5.Nxd4`, at about 9k, 34k and 129k visits each:
+
+| Settings | ~9k | ~34k | ~129k |
+|---|---|---|---|
+| No discount, no lean | −0.047 | −0.021 | −0.010 |
+| Discount 0.99 | −0.014 | +0.014 | +0.030 |
+| Discount 0.99, `OpponentBestLean` 1.0 | +0.040 | +0.063 | +0.065 |
+| Discount 0.995, `OpponentBestLean` 1.0 | +0.026 | +0.045 | +0.054 |
+
+After `5.Nd5`, the expected game length falls faster with search than after `5.Nxd4`: to 94 half-moves against 104 at about 129k visits.
+
+Root searches with `OpponentBestLean` 1.0:
+- **Choices:** `5.Nd5` at 100k nodes with discount 0.99 and 0.995, and the test game's `6.e4` and `8.Bxa6`. From the start position, `1.d4` with 0.99, ahead of `1.Nc3` by 0.008, and `1.e4` with 0.995.
+- **The game-report position:** the trap `19...Rd3`, which the engine expects to end the game sooner than the safe `19...Re7`, because most 1300 players miss `20.Bf4`.
+- **Mates:** king and queen against king in 6, 8 and 9 moves with 0.99.
+
+The discounted values are on a different scale: 0.3 to 0.6 is already a large advantage.
 
 ## Open Questions
 - **Which main network.** The Lc0 release ships with a network (`791556.pb.gz`) that is good enough to develop with. A stronger network, such as a BT4 transformer network, can come later.

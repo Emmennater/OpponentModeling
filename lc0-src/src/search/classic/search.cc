@@ -1118,7 +1118,8 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
       if (n > 0 && edge.IsTerminal() && edge.GetWL(0.0f) < 0.0f) {
         stats->num_losing_edges += 1;
       }
-      if (n > 0 && edge.IsTerminal() && edge.GetWL(0.0f) == 1.0f &&
+      // Opponent modeling: a discounted win is below 1 (see OpponentDiscount).
+      if (n > 0 && edge.IsTerminal() && edge.GetWL(0.0f) > 0.0f &&
           !edge.IsTbTerminal()) {
         stats->mate_depth =
             std::min(stats->mate_depth,
@@ -2278,6 +2279,7 @@ void SearchWorker::ExtendNode(Node* node, int depth,
         } else {  // Cursed wins and blessed losses count as draws.
           node->MakeTerminal(GameResult::DRAW, m, Node::Terminal::Tablebase);
         }
+        DiscountTerminal(node);
         search_->tb_hits_.fetch_add(1, std::memory_order_acq_rel);
         return;
       }
@@ -2440,6 +2442,12 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
     node_to_process->eval->m = node->GetM();
     return;
   }
+  // Opponent modeling: a result counts less the more plies until the game
+  // ends (see OpponentDiscount), here estimated by the moves-left head.
+  if (const float discount = Discount(); discount < 1.0f) {
+    node_to_process->eval->q *=
+        std::pow(discount, std::max(0.0f, node_to_process->eval->m));
+  }
   node_to_process->eval->q = -node_to_process->eval->q;
   // For NN results, we need to populate policy as well as value.
   // First the value...
@@ -2522,6 +2530,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
   const float best_lean = search_->opponent_backend_
                               ? params_.GetOpponentBestLean()
                               : 0.0f;
+  const float discount = Discount();
 
   // Backup V value up to a root. After 1 visit, V = Q.
   float v = node_to_process.eval->q;
@@ -2567,12 +2576,12 @@ void SearchWorker::DoBackupUpdateSingleNode(
       }
       if (visits > 0) {
         // The children's values are for the side to move at n, n's for the
-        // other side.
+        // other side, and a ply further from the game's end.
         double wl = weighted_wl / visits;
         if ((parent_depth + 1) % 2 == 1) {
           wl += best_lean * (most_visited_wl - wl);
         }
-        n->SetWL(-wl);
+        n->SetWL(-wl * discount);
       }
     }
     if (n->GetN() >= solid_threshold) {
@@ -2603,6 +2612,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
     v = -v;
     v_delta = -v_delta;
     m++;
+    // Opponent modeling: one ply further from the game's end.
+    v *= discount;
+    v_delta *= discount;
 
     // Update the stats.
     // Best move.
@@ -2669,6 +2681,7 @@ bool SearchWorker::MaybeSetBounds(Node* p, bool opponent_node, float m,
       p->MakeTerminal(
           -upper, (total_p > 0.0f ? weighted_m / total_p : m) + 1.0f,
           prefer_tb ? Node::Terminal::Tablebase : Node::Terminal::EndOfGame);
+      DiscountTerminal(p);
       *v_delta = -(p->GetWL() - cur_v);
       *d_delta = p->GetD() - cur_d;
       *m_delta = p->GetM() - cur_m;
@@ -2728,6 +2741,7 @@ bool SearchWorker::MaybeSetBounds(Node* p, bool opponent_node, float m,
         -upper,
         (upper == GameResult::BLACK_WON ? std::max(losing_m, m) : m) + 1.0f,
         prefer_tb ? Node::Terminal::Tablebase : Node::Terminal::EndOfGame);
+    DiscountTerminal(p);
     // Negate v_delta because we're calculating for the parent, but immediately
     // afterwards we'll negate v_delta in case it has come from the child.
     *v_delta = -(p->GetWL() - cur_v);
