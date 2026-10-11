@@ -6,30 +6,37 @@ pilot checks whether its value head can learn the opponent-model search's
 values instead, which include the modeled opponent's likely mistakes, and
 whether that changes the engine's choices for the better. Three steps:
 
-1. Targets: the opponent-model search (5,000 nodes, opponent and own rating
-   1700, OpponentCaution 0.15, no lean or discount) on positions from real
-   games, saved as it goes, so an interrupted run resumes.
+1. Targets: the opponent-model search (5,000 nodes; the opponent's rating,
+   caution, lean and discount set by the options below) on positions from
+   real games, saved as it goes, so an interrupted run resumes. Each target
+   also keeps the root's statistics for every move (visits, prior, value),
+   for training the policy head later.
 2. Training: the value head's two fully connected layers, with the body and
    the value convolution frozen, on 80% of the positions. Reported on the
    other 20%, against the original head and against the original head
    rescaled to fit the targets, which is what the fine-tuned head has to beat
    to have learned something about positions rather than an offset. The
    result is written into a copy of the network in Lc0's own format.
-3. Tests: the original and the fine-tuned network, with the settings in
-   TEST_OPTIONS, on the Belgrade Gambit with equal search for 5.Nxd4 and
-   5.Nd5, opening choices, two Halloween Gambit positions and a mate in 2.
+3. Tests: the original and the fine-tuned network, on the Belgrade Gambit
+   with equal search for 5.Nxd4 and 5.Nd5, opening choices, two Halloween
+   Gambit positions and a mate in 2, with the settings in TEST_OPTIONS and
+   again with the targets' own settings.
 
-Files go to lc0/finetune/ (ignored by git). Needs the repository's .venv
+Files go to lc0/finetune/<tag>/ (ignored by git); the positions are shared,
+in lc0/finetune/positions.json. Needs the repository's .venv
 (PyTorch, onnx, onnxruntime, python-chess, grpcio-tools, tqdm), and Lc0 built
 in lc0-src/build with the network in lc0/bin and Maia-3 in lc0/nets.
 
 Step 1 saves its targets as it goes and resumes where it stopped; steps 2 and
 3 always run (seconds and minutes). A summary is saved to
-lc0/finetune/summary.txt.
+lc0/finetune/<tag>/summary.txt.
 
-Usage (the full pilot, 2,250 new targets plus the tests, took 10-15 minutes):
-    .venv\\Scripts\\python tools\\finetune_value_head.py
+Usage (the first pilot, 2,250 targets plus the tests, took 10-15 minutes):
+    .venv\\Scripts\\python tools\\finetune_value_head.py --tag pilot --rating 1700 --caution 0.15
+    .venv\\Scripts\\python tools\\finetune_value_head.py --tag cautious --rating 1900 --caution 0.5
 """
+
+import argparse
 
 import gzip
 import json
@@ -50,16 +57,15 @@ from onnx import numpy_helper
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "lc0" / "finetune"
+SHARED = ROOT / "lc0" / "finetune"
+WORK = SHARED  # lc0/finetune/<tag>, set in main()
 LC0 = ROOT / "lc0-src" / "build" / "lc0.exe"
 NET = ROOT / "lc0" / "bin" / "791556.pb.gz"
 MAIA = ROOT / "lc0" / "nets" / "maia3-23m-fp16.onnx"
-NET_ONNX = WORK / "791556.onnx"
-TUNED_NET = WORK / "791556-om.pb.gz"
+NET_ONNX = SHARED / "791556.onnx"
 
 TARGET_NODES = 5000
-TARGET_OPTIONS = {"OpponentModelRating": 1700, "OpponentModelOwnRating": 1700,
-                  "OpponentCaution": 0.15, "OpponentDiscount": 1.0, "OpponentBestLean": 0}
+TARGET_OPTIONS = {}  # set in main()
 TEST_OPTIONS = {"OpponentModelRating": 1500, "OpponentModelOwnRating": 1500,
                 "OpponentCaution": 0.15, "OpponentDiscount": 0.995, "OpponentBestLean": 1.0}
 
@@ -93,7 +99,8 @@ class Lc0:
     """An Lc0 process with the opponent model."""
 
     NODE_LINE = re.compile(r"info string node .*\(WL: +(-?[0-9.]+)\) \(D: +([0-9.]+)\)")
-    MOVE_LINE = re.compile(r"info string (\S+)\s+\(\s*\d+\s*\) N: +(\d+).*\(Q: +(-?[0-9.]+)\)")
+    MOVE_LINE = re.compile(
+        r"info string (\S+)\s+\(\s*\d+\s*\) N: +(\d+).*\(P: +([0-9.]+)%\).*\(Q: +(-?[0-9.]+)\)")
 
     def __init__(self, weights, options):
         cuda = cuda_path()
@@ -109,7 +116,8 @@ class Lc0:
         self.proc.stdin.flush()
 
     def search(self, moves, nodes, searchmoves=""):
-        """Returns the root's (WL, D), its children's {move: (visits, Q)} and the best move."""
+        """Returns the root's (WL, D), its children's {move: (visits, prior, Q)}
+        and the best move."""
         self.send("position startpos" + (f" moves {moves}" if moves else ""))
         self.send(f"go{' searchmoves ' + searchmoves if searchmoves else ''} nodes {nodes}")
         root, children, best = None, {}, None
@@ -117,7 +125,7 @@ class Lc0:
             if m := self.NODE_LINE.search(line):
                 root = (float(m.group(1)), float(m.group(2)))
             elif (m := self.MOVE_LINE.search(line)) and m.group(1) != "node":
-                children[m.group(1)] = (int(m.group(2)), float(m.group(3)))
+                children[m.group(1)] = (int(m.group(2)), float(m.group(3)) / 100, float(m.group(4)))
             if line.startswith("bestmove"):
                 best = line.split()[1]
                 break
@@ -132,7 +140,7 @@ class Lc0:
 
 
 def generate_targets():
-    positions = json.loads((WORK / "positions.json").read_text())
+    positions = json.loads((SHARED / "positions.json").read_text())
     path = WORK / "targets.json"
     targets = json.loads(path.read_text()) if path.exists() else []
     if len(targets) >= len(positions):
@@ -142,9 +150,9 @@ def generate_targets():
     lc0 = Lc0(NET, TARGET_OPTIONS)
     for i in tqdm(range(len(targets), len(positions)), initial=len(targets), total=len(positions),
                   desc="Targets", unit="pos"):
-        root, _, _ = lc0.search(" ".join(positions[i]["moves"]), TARGET_NODES)
+        root, children, _ = lc0.search(" ".join(positions[i]["moves"]), TARGET_NODES)
         if root is not None:
-            targets.append({**positions[i], "wl": root[0], "d": root[1]})
+            targets.append({**positions[i], "wl": root[0], "d": root[1], "root": children})
         if len(targets) % 50 == 0:
             path.write_text(json.dumps(targets))
     lc0.close()
@@ -214,7 +222,7 @@ class Head(torch.nn.Module):
 
 def net_proto():
     """Python bindings for Lc0's weights format, generated once."""
-    out = WORK / "proto"
+    out = SHARED / "proto"
     if not (out / "proto" / "net_pb2.py").exists():
         from grpc_tools import protoc
         out.mkdir(exist_ok=True)
@@ -298,8 +306,9 @@ def train(targets):
     write_layer(w.ip1_val_b, state["fc1.bias"])
     write_layer(w.ip2_val_w, state["fc2.weight"].ravel())
     write_layer(w.ip2_val_b, state["fc2.bias"])
-    TUNED_NET.write_bytes(gzip.compress(net.SerializeToString()))
-    summary.append(f"Wrote {TUNED_NET}")
+    tuned_net = WORK / "791556-om.pb.gz"
+    tuned_net.write_bytes(gzip.compress(net.SerializeToString()))
+    summary.append(f"Wrote {tuned_net}")
     print("\n".join(summary))
     return summary
 
@@ -317,20 +326,20 @@ def san(moves, uci):
         return uci
 
 
-def tests():
-    print("\nStep 3: tests, original against fine-tuned network")
-    jobs = [(name, n) for name, n in (("Original", NET), ("Fine-tuned", TUNED_NET))]
+def tests(options, label):
+    print(f"\nStep 3: tests with {label}, original against fine-tuned network")
+    jobs = [(name, n) for name, n in (("Original", NET), ("Fine-tuned", WORK / "791556-om.pb.gz"))]
     total = len(jobs) * (6 + len(ROOT_TESTS))
     results = {}
     with tqdm(total=total, desc="Tests", unit="search") as bar:
         for name, weights in jobs:
-            lc0 = Lc0(weights, TEST_OPTIONS)
+            lc0 = Lc0(weights, options)
             gaps = []
             for nodes in (20000, 80000, 300000):
                 q = {}
                 for move in ("f3d4", "c3d5"):
                     _, children, _ = lc0.search(BELGRADE, nodes, searchmoves=move)
-                    q[move] = children.get(move, (0, float("nan")))[1]
+                    q[move] = children.get(move, (0, 0, float("nan")))[2]
                     bar.update()
                 gaps.append(q["c3d5"] - q["f3d4"])
             choices = []
@@ -340,7 +349,8 @@ def tests():
                 bar.update()
             lc0.close()
             results[name] = (gaps, choices)
-    summary = ["Belgrade Gambit, 5.Nd5 - 5.Nxd4 with equal search (about 9k, 34k, 129k visits each):"]
+    summary = [f"Tests with {label}: {options}",
+               "Belgrade Gambit, 5.Nd5 - 5.Nxd4 with equal search (about 9k, 34k, 129k visits each):"]
     for name, (gaps, _) in results.items():
         summary.append(f"  {name:<11} " + "   ".join(f"{g:+.3f}" for g in gaps))
     summary.append("Choices:")
@@ -352,9 +362,23 @@ def tests():
 
 
 def main():
+    global WORK, TARGET_OPTIONS
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--tag", default="pilot", help="experiment name: files go to lc0/finetune/<tag>")
+    parser.add_argument("--rating", type=int, default=1700, help="the targets' opponent and own rating")
+    parser.add_argument("--caution", type=float, default=0.15, help="the targets' OpponentCaution")
+    parser.add_argument("--lean", type=float, default=0.0, help="the targets' OpponentBestLean")
+    parser.add_argument("--discount", type=float, default=1.0, help="the targets' OpponentDiscount")
+    args = parser.parse_args()
+    WORK = SHARED / args.tag
     WORK.mkdir(parents=True, exist_ok=True)
+    TARGET_OPTIONS = {"OpponentModelRating": args.rating, "OpponentModelOwnRating": args.rating,
+                      "OpponentCaution": args.caution, "OpponentDiscount": args.discount,
+                      "OpponentBestLean": args.lean}
+    print(f"Experiment '{args.tag}': targets with {TARGET_OPTIONS}")
     targets = generate_targets()
-    summary = train(targets) + [""] + tests()
+    summary = (train(targets) + [""] + tests(TEST_OPTIONS, "your settings") + [""]
+               + tests(TARGET_OPTIONS, "the targets' settings"))
     (WORK / "summary.txt").write_text("\n".join(summary) + "\n")
     print(f"\nSummary saved to {WORK / 'summary.txt'}")
 
