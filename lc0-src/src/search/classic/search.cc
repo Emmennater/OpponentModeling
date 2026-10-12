@@ -637,12 +637,23 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   // when Black is to move.
   std::function<void(const Node*, int, int, bool)> write =
       [&](const Node* node, int depth, int ply, bool need_number) {
+        // The opponent's replies with enough visits, or likely enough: one the
+        // closer look made likely late may have few visits yet (see
+        // OpponentDeepTactics), and is shown even if never searched.
+        constexpr float kShownProbability = 0.05f;
+        const bool opponent = opponent_at(depth);
         std::vector<EdgeAndNode> moves;
+        bool searched = false;
         if (depth <= max_depth) {
           for (const auto& edge : node->Edges()) {
-            if (edge.GetN() >= min_visits) moves.push_back(edge);
+            if (edge.GetN() >= min_visits ||
+                (opponent && edge.GetP() >= kShownProbability)) {
+              moves.push_back(edge);
+              searched |= edge.GetN() > 0;
+            }
           }
         }
+        if (!searched) moves.clear();
         if (moves.empty()) {
           // Scores are for the side this engine plays, the root's side to
           // move. Also the main network's own evaluation of the position,
@@ -666,11 +677,19 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
           return;
         }
         const bool black = ply % 2 == 1;
+        // This engine's moves by visits, the opponent's by probability, with
+        // the most likely searched one first, as the main line.
         std::stable_sort(moves.begin(), moves.end(),
-                         [](const EdgeAndNode& a, const EdgeAndNode& b) {
-                           return a.GetN() > b.GetN();
+                         [&](const EdgeAndNode& a, const EdgeAndNode& b) {
+                           return opponent ? a.GetP() > b.GetP()
+                                           : a.GetN() > b.GetN();
                          });
-        const bool opponent = opponent_at(depth);
+        if (opponent) {
+          const auto first_searched = std::find_if(
+              moves.begin(), moves.end(),
+              [](const EdgeAndNode& e) { return e.GetN() > 0; });
+          std::rotate(moves.begin(), first_searched, first_searched + 1);
+        }
         if (!opponent) {
           if (node == root_node_) {
             for (auto& edge : moves) {
@@ -693,9 +712,13 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
         for (size_t i = 1; i < moves.size(); ++i) {
           add("(");
           emit(moves[i], true);
-          san.Push(to_tactics_move(moves[i].GetMove(black)));
-          write(moves[i].node(), depth + 1, ply + 1, false);
-          san.Pop();
+          if (moves[i].GetN() == 0) {
+            add("{not searched yet}");
+          } else {
+            san.Push(to_tactics_move(moves[i].GetMove(black)));
+            write(moves[i].node(), depth + 1, ply + 1, false);
+            san.Pop();
+          }
           add(")");
         }
         san.Push(to_tactics_move(main.GetMove(black)));
