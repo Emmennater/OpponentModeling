@@ -776,27 +776,27 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kSolidTreeThresholdId, 1, 2000000000) = 100;
   options->Add<IntOption>(kOpponentRootCandidatesId, 0, 64) = 8;
   options->Add<IntOption>(kOpponentRootScoutId, 0, 1000000) = 1000;
-  options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.0f;
-  options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 0.0f;
-  options->Add<FloatOption>(kOpponentCautionId, 0.0f, 1.0f) = 0.0f;
+  options->Add<FloatOption>(kOpponentMinProbabilityId, 0.0f, 0.5f) = 0.002f;
+  options->Add<FloatOption>(kOpponentBestLeanId, 0.0f, 1.0f) = 1.0f;
+  options->Add<FloatOption>(kOpponentCautionId, 0.0f, 1.0f) = 0.15f;
   options->Add<FloatOption>(kOpponentRefutationProbabilityId, 0.0f, 1.0f) =
       0.05f;
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
-  options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 0;
+  options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 16;
   options->Add<BoolOption>(kOpponentSoundCautionId) = false;
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
-  options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 1.0f) = 0.0f;
-  options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 1000;
+  options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 1.0f) = 0.25f;
+  options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 500;
   options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 4;
-  options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 4;
+  options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 8;
   options->Add<StringOption>(kOpponentStockfishPathId) = "";
   options->Add<StringOption>(kTreeExportFileId) = "";
   options->Add<IntOption>(kTreeExportDepthId, 1, 100) = 12;
   options->Add<IntOption>(kTreeExportWidthId, 1, 100) = 4;
-  options->Add<FloatOption>(kTreeExportMinShareId, 0.0f, 1.0f) = 0.002f;
-  options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 1.0f;
+  options->Add<FloatOption>(kTreeExportMinShareId, 0.0f, 1.0f) = 0.01f;
+  options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 0.995f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
-  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.0f;
+  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.25f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)

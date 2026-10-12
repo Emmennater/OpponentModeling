@@ -290,9 +290,9 @@ class ClassicSearchFactory : public SearchFactory {
     parser->Add<ButtonOption>(kClearTree);
     parser->Add<StringOption>(kOpponentModelWeightsId) = "";
     parser->Add<FloatOption>(kOpponentModelTemperatureId, 0.1f, 10.0f) = 1.0f;
-    parser->Add<FloatOption>(kOpponentModelRatingId, 500.0f, 3000.0f) = 1300.0f;
+    parser->Add<FloatOption>(kOpponentModelRatingId, 500.0f, 3000.0f) = 1500.0f;
     parser->Add<FloatOption>(kOpponentModelOwnRatingId, 500.0f, 3000.0f) =
-        1300.0f;
+        1500.0f;
     parser->Add<BoolOption>(kOpponentTreeReuseId) = false;
   }
 };
