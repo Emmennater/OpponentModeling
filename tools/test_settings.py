@@ -39,7 +39,7 @@ OPTION = ""  # the option tested, set in main()
 STOCKFISH = fv.ROOT.parent / "StockfishTrapFinder" / "stockfish" / "stockfish.exe"
 PLAYING = {"OpponentModelRating": 1400, "OpponentModelOwnRating": 1400, "OpponentBestLean": 1.0,
            "OpponentDiscount": 0.995, "OpponentCaution": 0.15, "OpponentRefutationProbability": 0.05,
-           "OpponentTactics": 0.5, "OpponentCautionAhead": 0.5, "CPuct": 1.377}
+           "OpponentTactics": 0.5, "OpponentCautionAhead": 0.5}
 AHEAD_MIN, AHEAD_MAX = 150, 1000  # the side to move's lead, in centipawns
 GIVES_BACK = 200  # a drop of this many centipawns or more gives back much of the advantage
 NF6_LINE = ("e2e4 e7e5 g1f3 b8c6 b1c3 g8f6 d2d4 e5d4 c3d5 f6e4 d1e2 f7f5 f3g5 f8b4 e1d1 e8g8 e2h5 e4g5 "

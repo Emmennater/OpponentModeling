@@ -46,7 +46,7 @@ from maia3_net import Maia3Net  # noqa: E402
 STOCKFISH = fv.ROOT.parent / "StockfishTrapFinder" / "stockfish" / "stockfish.exe"
 PLAYING = {"OpponentModelRating": 1500, "OpponentModelOwnRating": 1500, "OpponentBestLean": 1.0,
            "OpponentDiscount": 0.995, "OpponentCaution": 0.15, "OpponentRefutationProbability": 0.05,
-           "OpponentTactics": 0.5, "OpponentCautionAhead": 0.25, "CPuct": 1.377,
+           "OpponentTactics": 0.5, "OpponentCautionAhead": 0.25,
            "VerboseMoveStats": "false"}
 OPPONENT_RATING = 1500
 WINNING = 300  # centipawns for the engine
