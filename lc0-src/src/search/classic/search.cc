@@ -644,11 +644,13 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
           }
         }
         if (moves.empty()) {
-          // Also the main network's own evaluation of the position, without
-          // the opponent model or the search, from the cache.
+          // Scores are for the side this engine plays, the root's side to
+          // move. Also the main network's own evaluation of the position,
+          // without the opponent model or the search, from the cache.
+          auto ours = [&](double white) { return root_black ? 1.0 - white : white; };
           std::string own;
           if (node->IsTerminal()) {
-            own = ", Lc0 " + percent(white_score(node, ply));
+            own = ", Lc0 " + percent(ours(white_score(node, ply)));
           } else {
             const PositionHistory history = GetPositionHistoryAtNode(node);
             const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(
@@ -656,10 +658,11 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
             if (eval) {
               // The network's value is for the side to move.
               const double q = ply % 2 == 1 ? -eval->q : eval->q;
-              own = ", Lc0 " + percent((1.0 + q) / 2);
+              own = ", Lc0 " + percent(ours((1.0 + q) / 2));
             }
           }
-          add("{White " + percent(white_score(node, ply)) + own + "}");
+          add(std::string("{") + (root_black ? "Black " : "White ") +
+              percent(ours(white_score(node, ply))) + own + "}");
           return;
         }
         const bool black = ply % 2 == 1;
@@ -724,9 +727,9 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   }
   file << "[Event \"Lc0 (OM) search tree\"]\n[Site \"?\"]\n"
        << "[Annotator \"Lc0 (OM): the opponent's likely replies with their "
-          "probabilities; at the end of each line, White's expected score "
-          "with this engine playing on against the modeled opponent, and "
-          "Lc0's own evaluation of the position\"]\n"
+          "probabilities; at the end of each line, the expected score of the "
+          "side this engine plays, playing on against the modeled opponent, "
+          "and Lc0's own evaluation of the position for that side\"]\n"
        << "[Date \"????.??.??\"]\n[Round \"-\"]\n[White \"?\"]\n"
        << "[Black \"?\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \""
        << PositionToFen(root) << "\"]\n\n"
