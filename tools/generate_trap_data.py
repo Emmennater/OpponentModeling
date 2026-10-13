@@ -4,10 +4,13 @@ data for the engine's own network.
 For every position in the games where a human is to move (up to MAX_PLY),
 Maia-3 (maia3-23m, on the CPU) gives the probability of each move, for the
 players' ratings, and Stockfish (MultiPV, DEPTH half-moves) scores each move.
-The probabilities are shifted toward Stockfish's best move as the engine's
-OpponentDeepTactics does (DEEP_RATE): each move gives up
-DEEP_RATE * (1 - exp(-loss / 300 cp)) of its probability to the best one, so
-that a blunder a careful player would see counts for less. That gives the
+The probabilities are then shifted by what each move loses against
+Stockfish's best: each is weighted by exp(-loss / SHIFT_CP) and they are
+renormalized, so a move's odds against another fall with how much worse it
+is. A natural defense Maia already favors then becomes the clear choice (a
+player sees the plain threat), while a rare only move stays rare (a hidden
+defense is still missed), unlike a shift that hands the lost probability to
+the best move whatever its own. That gives the
 position's trap value for the human to move, a one-move expectimax:
 
     V_trap = sum over moves r of P(r) * tanh(Stockfish(r) / 350)
@@ -16,12 +19,10 @@ against its objective value, tanh(Stockfish's best / 350), both as W - L for
 the side to move. These are the targets for the value at positions where the
 opponent is to move.
 
-The report then finds the trap positions: where the human's most natural
-move, Maia's most likely before the shift (at least NATURAL_P), loses
-BLUNDER_CP or more against the best, and V_trap is at least TRAP_MARGIN worse
-than the objective value. A position where the best move is the most likely
-one is no trap, however many other moves would lose: the threat is plain to
-see. And walks
+The report then finds the trap positions: where at least TRAP_MASS of the
+(shifted) probability is on moves that lose BLUNDER_CP or more against the
+best, and V_trap is at least TRAP_MARGIN worse than the objective value, so
+that a spread of small inaccuracies does not count as a trap; and walks
 back along the game to the move that set the trap: while the human's moves on
 the way were likely (Maia at least LIKELY), the whole line stays likely
 (REACH), and the trap setter's moves in between were natural (within NATURAL
@@ -44,8 +45,8 @@ Games are saved as they are analysed, so an interrupted run resumes; --report
 only analyses the data so far. Files go to lc0/finetune/trap_data/ (ignored by
 git): positions.jsonl (one game a line), summary.txt and traps.pgn.
 
-Usage (about 25 positions a second with 16 Stockfish processes, so 3000 games of
-up to 40 half-moves take about 80 minutes):
+Usage (about 10-15 positions a second at depth 10 with 16 Stockfish processes, so
+3000 games of up to 40 half-moves take 2-3 hours):
     .venv\\Scripts\\python tools\\generate_trap_data.py full_games.tsv
     .venv\\Scripts\\python tools\\generate_trap_data.py full_games.tsv --report
 """
@@ -69,12 +70,12 @@ import play_vs_maia as pv  # noqa: E402
 
 WORK = fv.SHARED / "trap_data"
 MAX_PLY = 40  # positions after at most this many half-moves
-DEPTH = 8
+DEPTH = 10  # depth 8 misjudged sharp lines (it thought 13.hxg4 lost 2 pawns after 12...Ng4)
 PROCESSES = 16
 CP_SCALE = 350.0  # W - L = tanh(cp / 350)
-DEEP_RATE = 0.5  # as OpponentDeepTactics
+SHIFT_CP = 300.0  # the multiplicative shift's scale
 TRAP_MARGIN = 0.3
-NATURAL_P = 0.3
+TRAP_MASS = 0.35
 BLUNDER_CP = 200
 KEEP_PROBABILITY = 0.005  # moves stored with their probability and score
 LIKELY = 0.4
@@ -163,33 +164,24 @@ def records_of(game, boards, probs, scores):
     return records
 
 
-def evaluate(record, rate=DEEP_RATE):
+def evaluate(record):
     """The position's objective value, trap value and blunder probability for
-    the side to move, with the probabilities shifted toward Stockfish's best
-    move (see DEEP_RATE)."""
+    the side to move, with the probabilities shifted by each move's loss (see
+    SHIFT_CP)."""
     moves = record["moves"]
     best = record["best"]
-    total = sum(p for _, p, _ in moves) or 1.0
-    probs = {m: p / total for m, p, _ in moves}
     scores = {m: cp for m, _, cp in moves}
-    best_move = max(scores, key=scores.get)
-    caught = 0.0
-    for m in probs:
-        rate_m = rate * (1.0 - math.exp(-(best - scores[m]) / 300.0))
-        caught += probs[m] * rate_m
-        probs[m] *= 1.0 - rate_m
-    probs[best_move] += caught
-    natural, natural_p = max(((m, p / total) for m, p, _ in moves), key=lambda mp: mp[1])
+    weights = {m: p * math.exp(-(best - scores[m]) / SHIFT_CP) for m, p, _ in moves}
+    total = sum(weights.values()) or 1.0
+    probs = {m: w / total for m, w in weights.items()}
     return {"objective": wl(best),
             "v_trap": sum(p * wl(scores[m]) for m, p in probs.items()),
-            "natural": natural, "natural_p": natural_p, "natural_loss": best - scores[natural],
+            "blunders": sum(p for m, p in probs.items() if best - scores[m] >= BLUNDER_CP),
             "probs": probs, "scores": scores}
 
 
 def is_trap(e):
-    """The human's most natural move loses, and the trap value shows it."""
-    return (e["natural_p"] >= NATURAL_P and e["natural_loss"] >= BLUNDER_CP
-            and e["objective"] - e["v_trap"] >= TRAP_MARGIN)
+    return e["blunders"] >= TRAP_MASS and e["objective"] - e["v_trap"] >= TRAP_MARGIN
 
 
 def analyse_chunk(games, maia, pool, engines):
@@ -260,8 +252,8 @@ def report(path):
     starts = [(g, s) for g in games for s in find_starts(g)]
     longer = sum(1 for _, s in starts if s["trap"] - s["start"] > 1)
     lines = [f"{len(games)} games, {positions} positions analysed",
-             f"Trap positions (Maia's most likely move, at least {100 * NATURAL_P:.0f}%, loses {BLUNDER_CP} cp or more,"
-             f" and the trap value, shifted at {DEEP_RATE}, is at least {TRAP_MARGIN} below the objective value):"
+             f"Trap positions (at least {100 * TRAP_MASS:.0f}% of the probability, shifted with {SHIFT_CP:.0f} cp, on moves"
+             f" losing {BLUNDER_CP} cp or more, and a trap value at least {TRAP_MARGIN} below the objective value):"
              f" {traps} ({100 * traps / max(positions, 1):.1f}%)",
              f"Moves that started a trap and pay off in practice: {len(starts)}, of which {longer} start it"
              f" a move or more before the trap"]
@@ -289,13 +281,12 @@ def report(path):
                 node = node.add_variation(chess.Move.from_uci(m), comment=comment)
             trap = next(r for r in g["records"] if r["ply"] == s["trap"])
             e = evaluate(trap)
-            likely = sorted(trap["moves"], key=lambda x: -x[1])[:5]
-            total = sum(p for _, p, _ in trap["moves"]) or 1.0
+            likely = sorted(e["probs"].items(), key=lambda kv: -kv[1])[:5]
             node.comment = node.comment + (
                 f"the trap: objective {e['objective']:+.2f} for the side to move, trap value {e['v_trap']:+.2f};"
-                f" Maia's likely moves and Stockfish's loss in pawns: "
-                + ", ".join(f"{node.board().san(chess.Move.from_uci(m))} {100 * p / total:.0f}%"
-                            f" ({(trap['best'] - cp) / 100:.1f})" for m, p, cp in likely))
+                f" likely moves (shifted) and Stockfish's loss: "
+                + ", ".join(f"{node.board().san(chess.Move.from_uci(m))} {100 * p:.0f}%"
+                            f" ({(trap['best'] - e['scores'][m]) / 100:.1f})" for m, p in likely))
             print(game, file=f, end="\n\n")
     return lines
 
