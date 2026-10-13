@@ -73,7 +73,7 @@ MAX_PLY = 40  # positions after at most this many half-moves
 DEPTH = 10  # depth 8 misjudged sharp lines (it thought 13.hxg4 lost 2 pawns after 12...Ng4)
 PROCESSES = 16
 CP_SCALE = 350.0  # W - L = tanh(cp / 350)
-SHIFT_CP = 300.0  # the multiplicative shift's scale
+SHIFT_CP = 150.0  # the multiplicative shift's scale: strength 2 of the engine's OpponentDeepTactics
 TRAP_MARGIN = 0.3
 TRAP_MASS = 0.35
 BLUNDER_CP = 200

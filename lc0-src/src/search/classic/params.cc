@@ -802,9 +802,9 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 16;
   options->Add<BoolOption>(kOpponentStockfishFloorId) = false;
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
-  options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 10.0f) = 1.0f;
+  options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 10.0f) = 2.0f;
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 500;
-  options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 4;
+  options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 10;
   options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 8;
   options->Add<StringOption>(kOpponentStockfishPathId) = "";
   options->Add<IntOption>(kOpponentWideCandidatesId, 0, 64) = 0;
