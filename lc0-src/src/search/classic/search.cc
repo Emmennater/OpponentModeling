@@ -2960,27 +2960,32 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
       policy[i] += engine_mix * (engine_policy[i] - policy[i]);
     }
   }
-  // The opponent sees what a move visibly loses (see ScoreOpponentMoves):
-  // each move's probability is weighted by
-  // exp(-OpponentTactics * visible loss / 100 cp), its loss against the
-  // visibly best move, and the probabilities renormalized. A move that leaves
-  // material hanging at a glance is then mostly avoided, while a move whose
-  // refutation takes quiet moves to see keeps its probability.
+  // The opponent sees some of the tactics a quick look shows: each move gives
+  // up to OpponentTactics of its probability to the best-scoring move, more
+  // the more it loses, as in StockfishTrapFinder's MaiaModel. Measured on
+  // real games, the opponent then finds clear tactical shots more often,
+  // while quiet positions change little (see LC0_PLAN.md).
   const auto& tactics_scores = node_to_process->tactics_scores;
   if (!tactics_scores.empty() && tactics_scores.size() == policy.size()) {
-    constexpr float kLossScaleCp = 100.0f;
-    const float strength = params_.GetOpponentTactics();
-    const int best =
-        *std::max_element(tactics_scores.begin(), tactics_scores.end());
-    float total = 0.0f;
+    constexpr float kLossScaleCp = 300.0f;
+    const float max_rate = params_.GetOpponentTactics();
+    size_t best = 0;
+    for (size_t i = 1; i < policy.size(); ++i) {
+      if (tactics_scores[i] > tactics_scores[best] ||
+          (tactics_scores[i] == tactics_scores[best] &&
+           policy[i] > policy[best])) {
+        best = i;
+      }
+    }
+    float caught = 0.0f;
     for (size_t i = 0; i < policy.size(); ++i) {
-      const float loss = static_cast<float>(best - tactics_scores[i]);
-      policy[i] *= std::exp(-strength * loss / kLossScaleCp);
-      total += policy[i];
+      const float loss = static_cast<float>(tactics_scores[best] -
+                                            tactics_scores[i]);
+      const float rate = max_rate * (1.0f - std::exp(-loss / kLossScaleCp));
+      caught += policy[i] * rate;
+      policy[i] *= 1.0f - rate;
     }
-    if (total > 0.0f) {
-      for (float& p : policy) p /= total;
-    }
+    policy[best] += caught;
   }
   // Moves below OpponentMinProbability are taken as never played. A move
   // with probability 0 gets no visits at an opponent node.

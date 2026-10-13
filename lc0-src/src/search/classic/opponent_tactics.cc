@@ -68,99 +68,50 @@ int CaptureOrder(const Position& pos, Move m) {
          int(type_of(pos.moved_piece(m)));
 }
 
-// The visible-loss check: what a player sees of a move's material
-// consequences at a glance. Material counts pawns 100, knights and bishops 300,
-// rooks 500 and queens 900; the capture sequences are played out (every move
-// when in check), and wherever a side stops capturing, what it has left
-// hanging counts against it: the most the other side could win at once, by a
-// simple exchange. An ordinary quiescence search would let the side to move
-// "stand pat" with pieces en prise, and a deeper search would find the
-// tactics that win the material back, which a player at a glance does not.
-constexpr int kPieceCp[] = {0, 100, 300, 300, 500, 900, 0};
-constexpr int kVisibleMaxPly = 8;
-
-int MaterialCp(const Position& pos) {
-  const Color us = pos.side_to_move();
-  int cp = 0;
-  for (PieceType pt : {PAWN, KNIGHT, BISHOP, ROOK, QUEEN}) {
-    cp += kPieceCp[pt] * (popcount(pos.pieces(us, pt)) - popcount(pos.pieces(~us, pt)));
-  }
-  return cp;
-}
-
-// The most the side not to move could win at once from the side to move: a
-// piece's value, less its cheapest attacker's if the piece is defended.
-int HangingCp(const Position& pos) {
-  const Color us = pos.side_to_move();
-  const Color them = ~us;
-  int most = 0;
-  Bitboard ours = pos.pieces(us) & ~pos.pieces(KING);
-  while (ours) {
-    const Square sq = pop_lsb(&ours);
-    const Bitboard attackers = pos.attackers_to(sq) & pos.pieces(them);
-    if (!attackers) continue;
-    int cheapest = 100000;
-    for (PieceType pt : {PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING}) {
-      if (attackers & pos.pieces(them, pt)) {
-        cheapest = pt == KING ? 100000 : kPieceCp[pt];
-        break;
-      }
-    }
-    const bool defended = pos.attackers_to(sq) & pos.pieces(us);
-    const int gain = kPieceCp[type_of(pos.piece_on(sq))] - (defended ? cheapest : 0);
-    most = std::max(most, gain);
-  }
-  return most;
-}
-
-int VisibleCp(Position& pos, int alpha, int beta, int ply) {
+// Quiescence search: the side to move may stand on the evaluation, or play
+// the captures that do not lose material by exchange (all moves in check).
+Value QSearch(Position& pos, Value alpha, Value beta, int ply) {
   const bool in_check = pos.checkers();
-  int best;
-  ExtMove moves[MAX_MOVES];
-  ExtMove* end;
+  Value best = -VALUE_INFINITE;
   if (!in_check) {
-    best = MaterialCp(pos) - HangingCp(pos);
-    if (best >= beta || ply >= kVisibleMaxPly) return best;
+    best = Eval::evaluate(pos);
+    if (best >= beta || ply >= kMaxPly) return best;
     alpha = std::max(alpha, best);
-    end = generate<CAPTURES>(pos, moves);
-  } else {
-    best = -kMateCp;
-    end = generate<EVASIONS>(pos, moves);
+  } else if (ply >= kMaxPly) {
+    return Eval::evaluate(pos);
   }
+
+  ExtMove moves[MAX_MOVES];
+  ExtMove* end = in_check ? generate<EVASIONS>(pos, moves)
+                          : generate<CAPTURES>(pos, moves);
   for (ExtMove* m = moves; m != end; ++m) m->value = CaptureOrder(pos, m->move);
   std::sort(moves, end, [](const ExtMove& a, const ExtMove& b) {
     return a.value > b.value;
   });
+
   bool any_legal = false;
   StateInfo st;
   for (ExtMove* m = moves; m != end; ++m) {
     if (!pos.legal(m->move)) continue;
     any_legal = true;
-    // Captures that lose material by exchange are not what a glance looks at.
     if (!in_check && !pos.see_ge(m->move)) continue;
     pos.do_move(m->move, st);
-    const int value = -VisibleCp(pos, -beta, -alpha, ply + 1);
+    const Value value = -QSearch(pos, -beta, -alpha, ply + 1);
     pos.undo_move(m->move);
     if (value > best) {
       best = value;
-      if (value > alpha) alpha = value;
       if (value >= beta) return value;
+      alpha = std::max(alpha, value);
     }
   }
-  if (in_check && !any_legal) return -kMateCp;
+  if (in_check && !any_legal) return mated_in(ply);
   return best;
 }
 
-std::string UciMove(Move m) {
-  const Square from = from_sq(m);
-  Square to = to_sq(m);
-  if (type_of(m) == CASTLING) {  // As e1g1, not the king taking its rook.
-    to = make_square(to > from ? FILE_G : FILE_C, rank_of(from));
-  }
-  std::string uci = {char('a' + file_of(from)), char('1' + rank_of(from)),
-                     char('a' + file_of(to)), char('1' + rank_of(to))};
-  if (type_of(m) == PROMOTION) uci += " pnbrqk"[promotion_type(m)];
-  return uci;
+int ToCentipawns(Value v) {
+  if (v >= VALUE_MATE_IN_MAX_PLY) return kMateCp;
+  if (v <= VALUE_MATED_IN_MAX_PLY) return -kMateCp;
+  return int(v) * 100 / int(PawnValueEg);
 }
 
 int Key(int from, int to, char promotion) {
@@ -190,30 +141,16 @@ std::vector<int> ScoreOpponentMoves(const std::string& fen,
   StateInfo st;
   for (const ExtMove& m : MoveList<LEGAL>(pos)) {
     pos.do_move(m.move, st);
-    scores[Key(m.move)] = -VisibleCp(pos, -kMateCp, kMateCp, 1);
+    const Value value = -QSearch(pos, -VALUE_INFINITE, VALUE_INFINITE, 1);
     pos.undo_move(m.move);
+    scores[Key(m.move)] = ToCentipawns(value);
   }
 
   std::vector<int> result;
   result.reserve(moves.size());
   for (const TacticsMove& m : moves) {
     const auto it = scores.find(Key(m.from, m.to, m.promotion));
-    result.push_back(it == scores.end() ? -kMateCp : it->second);
-  }
-  return result;
-}
-
-std::vector<std::pair<std::string, int>> ScoreVisible(const std::string& fen) {
-  InitStockfish();
-  Position pos;
-  StateInfo root_state;
-  pos.set(fen, false, &root_state, &ThisThread());
-  std::vector<std::pair<std::string, int>> result;
-  StateInfo st;
-  for (const ExtMove& m : MoveList<LEGAL>(pos)) {
-    pos.do_move(m.move, st);
-    result.emplace_back(UciMove(m.move), -VisibleCp(pos, -kMateCp, kMateCp, 1));
-    pos.undo_move(m.move);
+    result.push_back(it == scores.end() ? 0 : it->second);
   }
   return result;
 }

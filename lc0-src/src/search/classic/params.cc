@@ -688,13 +688,12 @@ const OptionId SearchParams::kOpponentEngineMixId{
     "the main network alone."};
 const OptionId SearchParams::kOpponentTacticsId{
     "opponent-tactics", "OpponentTactics",
-    "With an opponent model, how much the modeled opponent sees of what a move "
-    "visibly loses: the capture sequences after it on material, counting what "
-    "is left hanging, as a player sees at a glance. Each move's probability "
-    "is weighted by exp(-this * visible loss / 100 cp) and the probabilities "
-    "renormalized, so a move that leaves a piece hanging is mostly avoided, "
-    "while one whose refutation takes quiet moves to see keeps its "
-    "probability (see OpponentDeepTactics for those). 0 turns this off."};
+    "With an opponent model, how much the modeled opponent sees of the "
+    "tactics a quick look shows: each of its moves is scored by a depth-1 "
+    "search with Stockfish 11's classical evaluation, and up to this share "
+    "of a move's probability goes to the best-scoring move, more the more "
+    "the move loses. Quiet moves, which win or lose little, are left almost "
+    "as the opponent model has them. 0 turns this off."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -817,7 +816,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kTreeExportMinShareId, 0.0f, 1.0f) = 0.01f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 0.995f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
-  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 10.0f) = 1.0f;
+  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.25f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
