@@ -25,9 +25,13 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#include <iostream>
+#include <string>
+
 #include "chess/board.h"
 #include "default_search.h"
 #include "engine.h"
+#include "search/classic/opponent_tactics.h"
 #include "search/register.h"
 #include "selfplay/loop.h"
 #include "tools/backendbench.h"
@@ -97,6 +101,11 @@ int main(int argc, const char** argv) {
       CommandLine::RegisterMode("leela2onnx", "Convert Leela network to ONNX.");
       CommandLine::RegisterMode("onnx2leela",
                                 "Convert ONNX network to Leela net.");
+      CommandLine::RegisterMode(
+          "visibleloss",
+          "Score every legal move of each FEN read from stdin by what it "
+          "visibly loses (as OpponentTactics), one line of move:centipawns "
+          "per FEN.");
       CommandLine::RegisterMode("describenet",
                                 "Shows details about the Leela network.");
     }
@@ -130,6 +139,17 @@ int main(int argc, const char** argv) {
       lczero::ConvertOnnxToLeela();
     } else if (CommandLine::ConsumeCommand("describenet")) {
       lczero::DescribeNetworkCmd();
+    } else if (CommandLine::ConsumeCommand("visibleloss")) {
+      // Opponent modeling: for the training data tools.
+      std::string fen;
+      while (std::getline(std::cin, fen)) {
+        std::string line;
+        for (const auto& [move, cp] : lczero::classic::ScoreVisible(fen)) {
+          if (!line.empty()) line += ' ';
+          line += move + ':' + std::to_string(cp);
+        }
+        std::cout << line << std::endl;
+      }
     } else {
       lczero::ChooseAndRunEngine();
     }

@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <span>
 #include <string>
 #include <vector>
@@ -36,14 +37,19 @@ struct TacticsMove {
 };
 
 // Opponent modeling: scores each move of the side to move in the position
-// `fen` by a depth-1 search: the move, then the best captures for both sides
-// (all moves when in check), judged by Stockfish 11's classical evaluation of
-// material, piece placement, mobility, king safety and pawns. The scores are
-// in centipawns for the side to move; a mate is +-10000. It is a quick look
-// at what each move wins or loses, as a club player might take, and is
-// implemented with Stockfish 11 (third_party/stockfish11). Thread-safe.
+// `fen` by what a player sees of its material consequences at a glance: the
+// capture sequences that follow it (every move when in check) on material
+// alone, where a side that stops capturing also loses what it has left
+// hanging. A move that leaves two pieces hanging after a queen trade then
+// shows as losing them, even if a deeper search would find a fork that wins
+// some back. The scores are in centipawns for the side to move; a mate is
+// -10000. Uses Stockfish 11's board (third_party/stockfish11). Thread-safe.
 std::vector<int> ScoreOpponentMoves(const std::string& fen,
                                     std::span<const TacticsMove> moves);
+
+// The same for every legal move, with its UCI notation (castling as e1g1),
+// for tools (see `lc0 visibleloss`).
+std::vector<std::pair<std::string, int>> ScoreVisible(const std::string& fen);
 
 // Writes moves in standard algebraic notation (SAN), for exporting the search
 // tree as PGN, with Stockfish 11's board. Moves are played with Push() and

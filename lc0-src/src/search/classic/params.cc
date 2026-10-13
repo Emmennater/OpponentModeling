@@ -619,11 +619,12 @@ const OptionId SearchParams::kOpponentDeepTacticsId{
     "relies on it: once a position where the opponent is to move has "
     "OpponentDeepTacticsVisits visits, Stockfish (OpponentStockfishPath) "
     "scores each of the opponent's moves there, searching "
-    "OpponentDeepTacticsDepth half-moves deep, and up to this share of a "
-    "move's probability goes to the best-scoring move, more the more the "
-    "move loses (as with OpponentTactics). It runs in "
-    "OpponentDeepTacticsThreads Stockfish processes beside the search. 0 "
-    "turns this off."};
+    "OpponentDeepTacticsDepth half-moves deep, and each move's probability is "
+    "weighted by exp(-this * loss / 300 cp), its loss against the best move, "
+    "and the probabilities renormalized: a blunder is the more likely to be "
+    "spotted the more it loses. At 1, a move losing 3 pawns has its odds cut "
+    "by a factor of e. It runs in OpponentDeepTacticsThreads Stockfish "
+    "processes beside the search. 0 turns this off."};
 const OptionId SearchParams::kOpponentDeepTacticsVisitsId{
     "opponent-deep-tactics-visits", "OpponentDeepTacticsVisits",
     "With OpponentDeepTactics, the visits a position where the opponent is to "
@@ -687,12 +688,13 @@ const OptionId SearchParams::kOpponentEngineMixId{
     "the main network alone."};
 const OptionId SearchParams::kOpponentTacticsId{
     "opponent-tactics", "OpponentTactics",
-    "With an opponent model, how much the modeled opponent sees of the "
-    "tactics a quick look shows: each of its moves is scored by a depth-1 "
-    "search with Stockfish 11's classical evaluation, and up to this share "
-    "of a move's probability goes to the best-scoring move, more the more "
-    "the move loses. Quiet moves, which win or lose little, are left almost "
-    "as the opponent model has them. 0 turns this off."};
+    "With an opponent model, how much the modeled opponent sees of what a move "
+    "visibly loses: the capture sequences after it on material, counting what "
+    "is left hanging, as a player sees at a glance. Each move's probability "
+    "is weighted by exp(-this * visible loss / 100 cp) and the probabilities "
+    "renormalized, so a move that leaves a piece hanging is mostly avoided, "
+    "while one whose refutation takes quiet moves to see keeps its "
+    "probability (see OpponentDeepTactics for those). 0 turns this off."};
 
 void BaseSearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -801,7 +803,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 16;
   options->Add<BoolOption>(kOpponentStockfishFloorId) = false;
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
-  options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 1.0f) = 0.25f;
+  options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 10.0f) = 1.0f;
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 500;
   options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 4;
   options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 8;
@@ -815,7 +817,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kTreeExportMinShareId, 0.0f, 1.0f) = 0.01f;
   options->Add<FloatOption>(kOpponentDiscountId, 0.9f, 1.0f) = 0.995f;
   options->Add<FloatOption>(kOpponentEngineMixId, 0.0f, 1.0f) = 0.0f;
-  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 1.0f) = 0.25f;
+  options->Add<FloatOption>(kOpponentTacticsId, 0.0f, 10.0f) = 1.0f;
 }
 
 BaseSearchParams::BaseSearchParams(const OptionsDict& options)
