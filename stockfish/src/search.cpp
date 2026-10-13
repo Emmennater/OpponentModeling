@@ -194,7 +194,8 @@ Search::Worker::~Worker() = default;
 
 std::string Search::Worker::describe_opponent_moves(Position& pos) {
     return opponentModel->describe(pos, int(options["Opponent Depth"]),
-                                   int(options["Centipawn Threshold"]));
+                                   int(options["Centipawn Threshold"]),
+                                   int(options["Opponent Max Moves"]));
 }
 
 void Search::Worker::set_opponent_cache_size(usize mb) { opponentModel->resize_cache(mb); }
@@ -208,7 +209,7 @@ void Search::Worker::start_searching() {
 
     accumulatorStack.reset();
 
-    opponentModel->start_search(opponentDepth, opponentThreshold);
+    opponentModel->start_search(opponentDepth, opponentThreshold, opponentMaxMoves);
 
     // Non-main threads go directly to iterative_deepening()
     if (!is_mainthread())

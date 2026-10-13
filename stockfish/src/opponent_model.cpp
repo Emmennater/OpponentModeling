@@ -105,13 +105,14 @@ void OpponentModel::resize_cache(usize cacheSizeMb) {
     filterCache = std::make_unique<FilterEntry[]>(filterCacheSize);  // Zero-initialized
 }
 
-void OpponentModel::start_search(int depth, int thresholdCp) {
-    if (depth != cacheDepth || thresholdCp != cacheThresholdCp)
+void OpponentModel::start_search(int depth, int thresholdCp, int maxMoves) {
+    if (depth != cacheDepth || thresholdCp != cacheThresholdCp || maxMoves != cacheMaxMoves)
     {
         std::memset(static_cast<void*>(filterCache.get()), 0,
                     filterCacheSize * sizeof(FilterEntry));
         cacheDepth       = depth;
         cacheThresholdCp = thresholdCp;
+        cacheMaxMoves    = maxMoves;
     }
 }
 
@@ -338,12 +339,101 @@ bool OpponentModel::test_move(Position& pos, Depth depth, Move m, Value alpha, b
     return true;
 }
 
+// Like find_best(), but each move is tested with a null window against the
+// lowest score that could still keep it: the threshold below the best score so
+// far, or, once `maxMoves` moves are kept, the score of the last of them. A
+// move above it is re-searched for its exact score and kept, and the last kept
+// move dropped if there are more than `maxMoves`. Of moves with equal scores,
+// the one searched first is kept. Finally, kept moves that fell outside the
+// threshold of the best score are dropped. Every move is decided: `kept` is
+// set for all of them.
+bool OpponentModel::find_top(Position& pos,
+                             Depth     depth,
+                             Value     threshold,
+                             usize     maxMoves,
+                             RootMove* moves,
+                             usize&    moveCount,
+                             Value&    bestValue) {
+
+    assert(depth > 0 && threshold >= 0 && maxMoves > 0);
+
+    accumulatorStack->reset();
+    root_moves(pos, depth, moves, moveCount);
+
+    RootMove* top[MAX_MOVES + 1];  // The moves kept so far, best first
+    usize     topCount = 0;
+
+    StateInfo st;
+    bestValue = -VALUE_INFINITE;
+
+    for (usize i = 0; i < moveCount; ++i)
+    {
+        RootMove& rm = moves[i];
+        rm.kept      = false;
+
+        // When the floor is a forced loss close to -VALUE_INFINITE, every
+        // score is above it
+        Value floor = std::max(bestValue - threshold - 1, -VALUE_INFINITE);
+        if (topCount == maxMoves)
+            floor = std::max(floor, top[topCount - 1]->value);
+
+        do_move(pos, rm.move, st);
+
+        Value value;
+        if (floor == -VALUE_INFINITE)
+            value = -alpha_beta(pos, -VALUE_INFINITE, VALUE_INFINITE, depth - 1, 1);
+        else
+        {
+            value = -alpha_beta(pos, -(floor + 1), -floor, depth - 1, 1);
+            if (value > floor)
+                value = -alpha_beta(pos, -VALUE_INFINITE, -floor, depth - 1, 1);
+        }
+
+        undo_move(pos, rm.move);
+
+        if (stopped())
+            return false;
+
+        if (value <= floor)
+            continue;
+
+        // Searched with an infinite upper bound and scoring above its lower
+        // bound, so the score is exact
+        rm.value  = value;
+        bestValue = std::max(bestValue, value);
+
+        // Insert after the moves with equal scores, which were searched first
+        usize j = topCount++;
+        while (j > 0 && top[j - 1]->value < value)
+        {
+            top[j] = top[j - 1];
+            --j;
+        }
+        top[j] = &rm;
+
+        if (topCount > maxMoves)
+            --topCount;
+    }
+
+    for (usize i = 0; i < topCount; ++i)
+        top[i]->kept = top[i]->value >= bestValue - threshold;
+
+    return true;
+}
+
 // A move is kept if it scores at least `best - threshold`. Moves whose score
 // find_best() found exactly are compared directly; the others are tested.
+// With more legal moves than `maxMoves`, find_top() decides instead.
 bool OpponentModel::decide(
-  Position& pos, Depth depth, Value threshold, RootMove* moves, usize& moveCount) {
+  Position& pos, Depth depth, Value threshold, usize maxMoves, RootMove* moves, usize& moveCount) {
 
     assert(threshold >= 0);
+
+    if (MoveList<LEGAL>(pos).size() > maxMoves)
+    {
+        Value bestValue;
+        return find_top(pos, depth, threshold, maxMoves, moves, moveCount, bestValue);
+    }
 
     Value bestValue;
     if (!find_best(pos, depth, moves, moveCount, bestValue))
@@ -373,7 +463,7 @@ bool OpponentModel::decide(
 // The slower search used by describe(): an exact score for every move.
 // Returns false if the search was stopped.
 bool OpponentModel::decide_exact(
-  Position& pos, Depth depth, Value threshold, RootMove* moves, usize& moveCount) {
+  Position& pos, Depth depth, Value threshold, usize maxMoves, RootMove* moves, usize& moveCount) {
 
     assert(depth > 0 && threshold >= 0);
 
@@ -398,13 +488,26 @@ bool OpponentModel::decide_exact(
     for (usize i = 0; i < moveCount; ++i)
         moves[i].kept = moves[i].value >= bestValue - threshold;
 
+    // Only the best `maxMoves` moves are kept; of moves with equal scores, the
+    // one searched first
+    RootMove* order[MAX_MOVES];
+    for (usize i = 0; i < moveCount; ++i)
+        order[i] = &moves[i];
+
+    std::stable_sort(order, order + moveCount,
+                     [](const RootMove* a, const RootMove* b) { return a->value > b->value; });
+
+    for (usize i = maxMoves; i < moveCount; ++i)
+        order[i]->kept = false;
+
     return true;
 }
 
 bool OpponentModel::prepare(Search::Worker& owner, Position& pos, OpponentNode& node) {
 
     assert(owner.opponentDepth > 0 && pos.side_to_move() == owner.opponentColor);
-    assert(owner.opponentDepth == cacheDepth && owner.opponentThreshold == cacheThresholdCp);
+    assert(owner.opponentDepth == cacheDepth && owner.opponentThreshold == cacheThresholdCp
+           && owner.opponentMaxMoves == cacheMaxMoves);
 
     node.legalCount = usize(generate<LEGAL>(pos, node.legalMoves) - node.legalMoves);
 
@@ -418,11 +521,42 @@ bool OpponentModel::prepare(Search::Worker& owner, Position& pos, OpponentNode& 
 
     FilterEntry& entry = cache_entry(node.key);
 
+    // With more legal moves than the limit, every move is decided at once
+    const bool limited = node.legalCount > usize(owner.opponentMaxMoves);
+
     if (entry.key == node.key)
     {
         node.bestValue = entry.bestValue;
         node.tested    = entry.tested;
         node.allowed   = entry.allowed;
+    }
+    else if (limited)
+    {
+        RootMove moves[MAX_MOVES];
+        usize    moveCount;
+        u64      nodesBefore = nodes;
+
+        bool completed = find_top(pos, owner.opponentDepth, node.threshold,
+                                  usize(owner.opponentMaxMoves), moves, moveCount, node.bestValue);
+
+        owner.nodes += nodes - nodesBefore;
+
+        if (!completed)
+            return false;
+
+        assert(moveCount == node.legalCount);
+
+        node.tested = node.allowed = MoveBits{};
+
+        for (usize j = 0; j < moveCount; ++j)
+        {
+            const usize i = index_of(node, moves[j].move);
+            node.tested.set(i);
+            if (moves[j].kept)
+                node.allowed.set(i);
+        }
+
+        entry = {node.key, node.bestValue, node.tested, node.allowed};
     }
     else
     {
@@ -458,8 +592,8 @@ bool OpponentModel::prepare(Search::Worker& owner, Position& pos, OpponentNode& 
     }
 
     // When the best score is a forced loss close to -VALUE_INFINITE, every
-    // move is within the threshold
-    node.allAllowed = node.bestValue - node.threshold - 1 < -VALUE_INFINITE;
+    // move is within the threshold. With the limit, every move is decided.
+    node.allAllowed = !limited && node.bestValue - node.threshold - 1 < -VALUE_INFINITE;
 
     return true;
 }
@@ -512,7 +646,7 @@ bool OpponentModel::is_allowed(
     return true;
 }
 
-std::string OpponentModel::describe(Position& pos, int depth, int thresholdCp) {
+std::string OpponentModel::describe(Position& pos, int depth, int thresholdCp, int maxMoves) {
 
     if (depth <= 0)
         return "Opponent modeling is disabled (Opponent Depth is 0).";
@@ -529,7 +663,7 @@ std::string OpponentModel::describe(Position& pos, int depth, int thresholdCp) {
     u64       nodesBefore = nodes;
     TimePoint startTime   = now();
 
-    if (!decide_exact(pos, depth, threshold, exact, exactCount))
+    if (!decide_exact(pos, depth, threshold, usize(maxMoves), exact, exactCount))
         return "The search was stopped.";
 
     const u64       exactNodes = nodes - nodesBefore;
@@ -538,7 +672,7 @@ std::string OpponentModel::describe(Position& pos, int depth, int thresholdCp) {
     nodesBefore = nodes;
     startTime   = now();
 
-    if (!decide(pos, depth, threshold, fast, fastCount))
+    if (!decide(pos, depth, threshold, usize(maxMoves), fast, fastCount))
         return "The search was stopped.";
 
     const u64       fastNodes = nodes - nodesBefore;
@@ -562,7 +696,10 @@ std::string OpponentModel::describe(Position& pos, int depth, int thresholdCp) {
 
     out << "Low-depth search for " << (pos.side_to_move() == WHITE ? "white" : "black")
         << " at depth " << depth << ", threshold " << thresholdCp << " cp (" << threshold
-        << " internal units)\n";
+        << " internal units)";
+    if (usize(maxMoves) < legalCount)
+        out << ", at most " << maxMoves << " moves";
+    out << "\n";
 
     for (usize i = 0; i < exactCount; ++i)
     {

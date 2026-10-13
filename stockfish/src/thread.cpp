@@ -349,6 +349,7 @@ void ThreadPool::start_thinking(const OptionsMap&  options,
             // Read once per search, since looking up options by name is too slow per node
             th->worker->opponentDepth     = int(options["Opponent Depth"]);
             th->worker->opponentThreshold = int(options["Centipawn Threshold"]);
+            th->worker->opponentMaxMoves  = int(options["Opponent Max Moves"]);
             th->worker->opponentColor     = ~pos.side_to_move();
         });
     }

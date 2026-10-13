@@ -440,6 +440,7 @@ class Worker {
     std::unique_ptr<OpponentModel> opponentModel;
     int                            opponentDepth     = 0;
     int                            opponentThreshold = 0;  // In centipawns
+    int                            opponentMaxMoves  = 0;
     Color                          opponentColor     = COLOR_NB;
 
     friend class Stockfish::ThreadPool;

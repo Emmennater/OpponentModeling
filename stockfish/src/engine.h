@@ -144,6 +144,7 @@ class Engine {
     // table holds no values from a previous search.
     int   lastOpponentDepth     = 0;
     int   lastOpponentThreshold = 0;
+    int   lastOpponentMaxMoves  = 0;
     Color lastOpponentColor     = COLOR_NB;
 };
 

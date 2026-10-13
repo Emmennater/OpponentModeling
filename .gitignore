@@ -1,5 +1,10 @@
 stockfish/src/stockfish.exe
 SFOMLogo.png
+LC0OMLogo.png
 lichess_games.tsv
 lc0/
 lc0-src/build/
+.venv/
+__pycache__/
+tree.pgn
+tree.pgn.stats.txt

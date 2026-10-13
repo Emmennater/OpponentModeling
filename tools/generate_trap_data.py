@@ -6,13 +6,17 @@ Maia-3 (maia3-23m, on the CPU) gives the probability of each move, for the
 players' ratings, and Stockfish (MultiPV, DEPTH half-moves) scores each move.
 The probabilities are then shifted by what each move loses against
 Stockfish's best, as far as a player would see it: the loss counts in
-proportion to how natural its refutation is, Maia's probability of
-Stockfish's reply (the second move of its line) for a player of the other
-side's rating. Each move is weighted by exp(-loss * P(refutation) / SHIFT_CP)
-and the probabilities renormalized. A move refuted by a plain recapture or
-capture then counts nearly its full loss and is mostly avoided, while one
-refuted by a sacrifice or a quiet move a player rarely finds keeps much of
-its probability. That gives the
+proportion to the chance the refutation is seen. Along the refutation (the
+refuting side's best moves by Stockfish, the defender's most likely by
+Maia), at each of the refuting side's next REFUTATION_STEPS moves, Maia (for
+a player
+of that side's rating) gives the chance of finding any move within KEEP_CP of
+the best; a step found at least SEEN of the time counts as seen, a rarer one
+in proportion, and the steps multiply. Each move is weighted by
+exp(-loss * seen / SHIFT_CP) and the probabilities renormalized. A blunder
+refuted by plain captures and checks then counts its full loss and is mostly
+avoided, while one whose refutation needs a move a player rarely finds keeps
+much of its probability. That gives the
 position's trap value for the human to move, a one-move expectimax:
 
     V_trap = sum over moves r of P(r) * tanh(Stockfish(r) / 350)
@@ -75,7 +79,12 @@ MAX_PLY = 40  # positions after at most this many half-moves
 DEPTH = 10  # depth 8 misjudged sharp lines (it thought 13.hxg4 lost 2 pawns after 12...Ng4)
 PROCESSES = 16
 CP_SCALE = 350.0  # W - L = tanh(cp / 350)
-REFUTED_CP = 50  # a move losing at least this gets its refutation's probability
+REFUTED_CP = 150  # a likely move losing at least this is checked for how plain its refutation is
+CANDIDATE_P = 0.05
+REFUTATION_STEPS = 3  # the refuting side's moves looked at
+KEEP_CP = 100  # a refuting move keeps the advantage within this of the best
+SEEN = 0.5  # a refuting move found at least this often counts as seen
+CONT_DEPTH = 8  # Stockfish's depth along the refutation
 SHIFT_CP = 150.0  # the multiplicative shift's scale: strength 2 of the engine's OpponentDeepTactics
 TRAP_MARGIN = 0.3
 TRAP_MASS = 0.35
@@ -172,27 +181,75 @@ def records_of(game, boards, probs, scores):
     return records
 
 
-def refutation_probs(game, boards, records, maia):
-    """Adds to each losing move (by REFUTED_CP or more) Maia's probability of
-    its refutation, for a player of the other side's rating."""
+def refutation_seen(game, boards, records, maia, pool, engines):
+    """Adds to each likely losing move (Maia at least CANDIDATE_P, losing
+    REFUTED_CP or more) the chance its refutation is seen: over the refuting
+    side's next REFUTATION_STEPS moves, Maia's chance of finding any move
+    within KEEP_CP of the best (for a player of that side's rating), counted
+    as seen from SEEN on and in proportion below. The line follows
+    Stockfish's best move for the refuting side and Maia's most likely one for
+    the defender. Other moves count as fully seen."""
     by_ply = dict(boards)
-    jobs = {True: [], False: []}  # by the refuter's color
+    active = []  # [entry, node, seen]
     for r in records:
         b = by_ply[r["ply"]]
         for entry in r["moves"]:
-            m, _, cp, reply = entry
-            if reply is None or r["best"] - cp < REFUTED_CP:
+            if entry[1] < CANDIDATE_P or r["best"] - entry[2] < REFUTED_CP:
                 continue
-            child = b.copy()
-            child.push_uci(m)
-            jobs[child.turn].append((entry, child, reply))
-    for white, items in jobs.items():
-        if not items:
-            continue
-        maia.self_elo, maia.oppo_elo = (game["white"], game["black"]) if white else (game["black"], game["white"])
-        policies, _ = maia.run([child for _, child, _ in items])
-        for (entry, _, reply), policy in zip(items, policies):
-            entry.append({mv.uci(): p for mv, p in policy.items()}.get(reply, 0.0))
+            node = b.copy()
+            node.push_uci(entry[0])
+            if not node.is_game_over():
+                active.append([entry, node, 1.0])
+    candidates = list(active)
+
+    def multipv(node):
+        sf = engines.get()
+        try:
+            info = sf.analyse(node, chess.engine.Limit(depth=CONT_DEPTH), multipv=node.legal_moves.count())
+            return {i["pv"][0]: i["score"].relative.score(mate_score=10000) for i in info if "pv" in i}
+        finally:
+            engines.put(sf)
+
+    def maia_policies(items):
+        """Maia's probabilities at each item's position, for the side to move
+        there and the other side's ratings."""
+        policies = [None] * len(items)
+        for white in (True, False):
+            group = [i for i, a in enumerate(items) if a[1].turn == white]
+            if not group:
+                continue
+            maia.self_elo, maia.oppo_elo = (game["white"], game["black"]) if white else (game["black"], game["white"])
+            results, _ = maia.run([items[i][1] for i in group])
+            for i, policy in zip(group, results):
+                policies[i] = policy
+        return policies
+
+    for _ in range(REFUTATION_STEPS):
+        if not active:
+            break
+        scores = list(pool.map(lambda a: multipv(a[1]), active))
+        for a, sc, policy in zip(active, scores, maia_policies(active)):
+            if sc:
+                best = max(sc.values())
+                found = sum(p for m, p in policy.items() if sc.get(m, -100000) >= best - KEEP_CP)
+                a[2] *= min(1.0, found / SEEN)
+        # Along the line: the refuter's best move by Stockfish, then the
+        # defender's (the human's) most likely move by Maia.
+        still = []
+        for a, sc in zip(active, scores):
+            if sc:
+                a[1].push(max(sc, key=sc.get))
+                if not a[1].is_game_over():
+                    still.append(a)
+        active = []
+        for a, policy in zip(still, maia_policies(still)):
+            if policy:
+                a[1].push(max(policy, key=policy.get))
+                if not a[1].is_game_over():
+                    active.append(a)
+            # A line that ends early keeps the chance found so far.
+    for entry, _, seen in candidates:
+        entry.append(seen)
 
 
 def evaluate(record):
@@ -202,8 +259,9 @@ def evaluate(record):
     moves = record["moves"]
     best = record["best"]
     scores = {e[0]: e[2] for e in moves}
-    # The loss counts in proportion to how natural its refutation is: entry
-    # [move, probability, score, reply, P(reply)], P(reply) when it loses.
+    # The loss counts in proportion to the chance its refutation is seen:
+    # entry [move, probability, score, reply, seen], seen for likely losing
+    # moves (see refutation_seen).
     weights = {e[0]: e[1] * math.exp(-(best - e[2]) * (e[4] if len(e) > 4 else 1.0) / SHIFT_CP)
                for e in moves}
     total = sum(weights.values()) or 1.0
@@ -234,7 +292,7 @@ def analyse_chunk(games, maia, pool, engines):
     results = []
     for g, bs, pr, fs in zip(games, boards, probs, futures):
         records = records_of(g, bs, pr, dict(f.result() for f in fs))
-        refutation_probs(g, bs, records, maia)
+        refutation_seen(g, bs, records, maia, pool, engines)
         results.append(records)
     return results
 

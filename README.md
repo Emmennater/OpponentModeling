@@ -64,6 +64,7 @@ The design is in [STOCKFISH_DESIGN.md](STOCKFISH_DESIGN.md).
 Aside from the usual Stockfish parameters, we have a few for controlling our opponent's moves:
 - Opponent Depth (default 2, at most 8): Search depth for our opponent. 0 disables opponent modeling. The low-depth search looks at every move, so its cost grows steeply with depth.
 - Centipawn Threshold (default 200): The centipawn threshold used for discarding opponent moves.
+- Opponent Max Moves (default 256, which is no limit): Of the moves within the threshold, the opponent only plays its best this many, by the low-depth search. Where a position has more legal moves than this, all its moves are decided at once, keeping the best so far with a null-window test against the last of them, much as MultiPV does.
 - Opponent Hash (default 16): Size in MB of each thread's filter cache, which remembers the opponent's best score and the verdicts on its moves for each position.
 
 ### Building
@@ -82,7 +83,7 @@ This builds `stockfish\src\stockfish.exe` for the current computer's CPU. To bui
 To check the build, run `stockfish.exe bench`. The unmodified source gives `Nodes searched : 2497913`.
 
 ### Checking the Opponent Model
-The non-standard UCI command `opponentmoves` runs the low-depth search for the side to move in the current position, using the current `Opponent Depth` and `Centipawn Threshold`. It prints every legal move with its exact score and whether it is kept. For example, in the console:
+The non-standard UCI command `opponentmoves` runs the low-depth search for the side to move in the current position, using the current `Opponent Depth`, `Centipawn Threshold` and `Opponent Max Moves`. It prints every legal move with its exact score and whether it is kept. For example, in the console:
 
 ```
 position fen rnb1kbnr/pppp1ppp/8/4p3/4P2q/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3

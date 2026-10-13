@@ -112,6 +112,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("Centipawn Threshold", Option(200, 0, 2000));
 
+    // Of the moves within the threshold, the opponent plays one of its best
+    // this many. MAX_MOVES means no limit.
+    options.add("Opponent Max Moves", Option(MAX_MOVES, 1, MAX_MOVES));
+
     // Size of each thread's opponent-model filter cache
     options.add(  //
       "Opponent Hash", Option(16, 1, MaxHashMB, [this](const Option& o) {
@@ -168,17 +172,19 @@ void Engine::go(Search::LimitsType& limits) {
     verify_network();
 
     // Values in the main hash table depend on the opponent model: on which side
-    // is the opponent, and on the depth and threshold. If any of these changed
+    // is the opponent, and on the depth, threshold and move limit. If any of these changed
     // since the last search, the stored values belong to a different game tree.
-    // With the model disabled, the side and threshold make no difference.
+    // With the model disabled, the side, threshold and limit make no difference.
     const int   opponentDepth     = int(options["Opponent Depth"]);
     const int   opponentThreshold = int(options["Centipawn Threshold"]);
+    const int   opponentMaxMoves  = int(options["Opponent Max Moves"]);
     const Color opponentColor     = ~pos.side_to_move();
 
     const bool modelChanged =
       opponentDepth != lastOpponentDepth
       || (opponentDepth > 0
-          && (opponentThreshold != lastOpponentThreshold || opponentColor != lastOpponentColor));
+          && (opponentThreshold != lastOpponentThreshold || opponentMaxMoves != lastOpponentMaxMoves
+              || opponentColor != lastOpponentColor));
 
     if (modelChanged && lastOpponentColor != COLOR_NB)
     {
@@ -188,6 +194,7 @@ void Engine::go(Search::LimitsType& limits) {
 
     lastOpponentDepth     = opponentDepth;
     lastOpponentThreshold = opponentThreshold;
+    lastOpponentMaxMoves  = opponentMaxMoves;
     lastOpponentColor     = opponentColor;
 
     threads.start_thinking(options, pos, states, limits);

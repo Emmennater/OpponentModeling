@@ -63,7 +63,8 @@ struct OpponentNode {
 // OpponentModel decides which moves the opponent would plausibly play, using
 // a low-depth search. Each main search worker owns one. A move is allowed if
 // the low-depth search scores it at least the opponent's best score minus the
-// threshold.
+// threshold, and, with more legal moves than the move limit, it is among the
+// best that many by that search.
 //
 // The low-depth search is a plain full-width alpha-beta search followed by a
 // search of captures, using Stockfish's move generation and NNUE evaluation.
@@ -87,7 +88,7 @@ class OpponentModel {
 
     // Called by the owning worker at the start of each search. The filter
     // cache is cleared if the parameters differ from those it was filled with.
-    void start_search(int depth, int thresholdCp);
+    void start_search(int depth, int thresholdCp, int maxMoves);
 
     // Prepares `node` for an opponent node of the main search, with the
     // opponent to move in `pos`: finds the opponent's best score, from the
@@ -105,7 +106,7 @@ class OpponentModel {
     // exact score for every move, and describes the result. It also checks that
     // the tests used during the main search give the same verdicts. Used by
     // the `opponentmoves` command.
-    std::string describe(Position& pos, int depth, int thresholdCp);
+    std::string describe(Position& pos, int depth, int thresholdCp, int maxMoves);
 
    private:
     // Filter cache entry: the opponent's best score, and the verdicts found
@@ -136,12 +137,33 @@ class OpponentModel {
     // false if the search was stopped.
     bool test_move(Position& pos, Depth depth, Move m, Value alpha, bool& above);
 
-    // find_best() followed by a test of every move, as used during the main
-    // search, but for all moves at once. Used by describe() as a check.
-    bool decide(Position& pos, Depth depth, Value threshold, RootMove* moves, usize& moveCount);
+    // With more legal moves than `maxMoves`, keeps the best `maxMoves` moves
+    // of those within the threshold, deciding every move at once. Returns
+    // false if the search was stopped.
+    bool find_top(Position&  pos,
+                  Depth      depth,
+                  Value      threshold,
+                  usize      maxMoves,
+                  RootMove*  moves,
+                  usize&     moveCount,
+                  Value&     best);
+
+    // The decisions as made during the main search, but for all moves at
+    // once. Used by describe() as a check.
+    bool decide(Position& pos,
+                Depth     depth,
+                Value     threshold,
+                usize     maxMoves,
+                RootMove* moves,
+                usize&    moveCount);
 
     // An exact score for every move. Used by describe().
-    bool decide_exact(Position& pos, Depth depth, Value threshold, RootMove* moves, usize& moveCount);
+    bool decide_exact(Position& pos,
+                      Depth     depth,
+                      Value     threshold,
+                      usize     maxMoves,
+                      RootMove* moves,
+                      usize&    moveCount);
 
     // Generates the root moves, ordered by a search of captures after each move
     void root_moves(Position& pos, Depth depth, RootMove* moves, usize& moveCount);
@@ -162,7 +184,7 @@ class OpponentModel {
 
     std::unique_ptr<FilterEntry[]> filterCache;
     usize                          filterCacheSize = 0;  // A power of two
-    int                            cacheDepth = -1, cacheThresholdCp = -1;
+    int                            cacheDepth = -1, cacheThresholdCp = -1, cacheMaxMoves = -1;
 
     u64 nodes = 0;
 };
