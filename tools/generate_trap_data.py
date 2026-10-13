@@ -4,26 +4,32 @@ data for the engine's own network.
 For every position in the games where a human is to move (up to MAX_PLY),
 Maia-3 (maia3-23m, on the CPU) gives the probability of each move, for the
 players' ratings, and Stockfish (MultiPV, DEPTH half-moves) scores each move.
-That gives the position's trap value for the human to move, a one-move
-expectimax:
+The probabilities are shifted toward Stockfish's best move as the engine's
+OpponentDeepTactics does (DEEP_RATE): each move gives up
+DEEP_RATE * (1 - exp(-loss / 300 cp)) of its probability to the best one, so
+that a blunder a careful player would see counts for less. That gives the
+position's trap value for the human to move, a one-move expectimax:
 
-    V_trap = sum over moves r of P_Maia(r) * tanh(Stockfish(r) / 350)
+    V_trap = sum over moves r of P(r) * tanh(Stockfish(r) / 350)
 
 against its objective value, tanh(Stockfish's best / 350), both as W - L for
 the side to move. These are the targets for the value at positions where the
 opponent is to move.
 
-The report then finds the trap positions, where V_trap is at least
-TRAP_MARGIN worse than the objective value for the human to move, and walks
+The report then finds the trap positions: where at least TRAP_MASS of the
+(shifted) probability is on moves that lose BLUNDER_CP or more against the
+best, and V_trap is at least TRAP_MARGIN worse than the objective value, so
+that a spread of small inaccuracies does not count as a trap; and walks
 back along the game to the move that set the trap: while the human's moves on
 the way were likely (Maia at least LIKELY), the whole line stays likely
 (REACH), and the trap setter's moves in between were natural (within NATURAL
 of Stockfish's best), the earliest of the trap setter's moves starts it. A
-start is kept if, in practice, it is worth at least the best move by
-Stockfish:
+start is kept if, in practice, it is worth about as much as the best move
+by Stockfish or more:
 
     P(reaching the trap) * (trap value for the setter)
-        + (1 - P) * tanh(Stockfish(start) / 350)  >=  tanh(Stockfish's best / 350)
+        + (1 - P) * tanh(Stockfish(start) / 350)
+            >=  tanh(Stockfish's best / 350) - PRACTICAL_TOLERANCE
 
 These starts are the examples for the policy. They are written to
 traps.pgn for review, each game up to the start, with the line to the trap.
@@ -64,11 +70,16 @@ MAX_PLY = 40  # positions after at most this many half-moves
 DEPTH = 8
 PROCESSES = 16
 CP_SCALE = 350.0  # W - L = tanh(cp / 350)
+DEEP_RATE = 0.5  # as OpponentDeepTactics
 TRAP_MARGIN = 0.3
+TRAP_MASS = 0.35
+BLUNDER_CP = 200
+KEEP_PROBABILITY = 0.005  # moves stored with their probability and score
 LIKELY = 0.4
 REACH = 0.3
 NATURAL = 100  # centipawns
 MAX_SETTER_MOVES = 3
+PRACTICAL_TOLERANCE = 0.05  # for Stockfish's noise at DEPTH
 CHUNK = 10  # games analysed at once
 ANNOTATION = re.compile(r"[?!]+$")
 
@@ -133,21 +144,47 @@ def maia_probs(game, boards, maia):
 
 
 def records_of(game, boards, probs, scores):
-    """Each position: Maia's probabilities and Stockfish's scores of every
-    move, with the trap value."""
+    """Each position: the likely moves (and the best and the played one) with
+    Maia's probability and Stockfish's score."""
     records = []
     for ply, b in boards:
         sc, pr = scores[ply], probs[ply]
         if not sc:
             continue
         best = max(sc.values())
-        v_trap = sum(p * wl(sc.get(m, best)) for m, p in pr.items())
         played = game["moves"][ply] if ply < len(game["moves"]) else None
-        records.append({"ply": ply, "best": best, "objective": wl(best), "v_trap": v_trap,
-                        "played": played, "p_played": pr.get(played) if played else None,
+        keep = {m for m, p in pr.items() if p >= KEEP_PROBABILITY}
+        keep |= {max(sc, key=sc.get)} | ({played} if played else set())
+        records.append({"ply": ply, "best": best, "played": played,
                         "cp_played": sc.get(played) if played else None,
-                        "top": sorted(pr.items(), key=lambda kv: -kv[1])[:5]})
+                        "moves": [[m, pr.get(m, 0.0), sc[m]] for m in keep if m in sc]})
     return records
+
+
+def evaluate(record, rate=DEEP_RATE):
+    """The position's objective value, trap value and blunder probability for
+    the side to move, with the probabilities shifted toward Stockfish's best
+    move (see DEEP_RATE)."""
+    moves = record["moves"]
+    best = record["best"]
+    total = sum(p for _, p, _ in moves) or 1.0
+    probs = {m: p / total for m, p, _ in moves}
+    scores = {m: cp for m, _, cp in moves}
+    best_move = max(scores, key=scores.get)
+    caught = 0.0
+    for m in probs:
+        rate_m = rate * (1.0 - math.exp(-(best - scores[m]) / 300.0))
+        caught += probs[m] * rate_m
+        probs[m] *= 1.0 - rate_m
+    probs[best_move] += caught
+    return {"objective": wl(best),
+            "v_trap": sum(p * wl(scores[m]) for m, p in probs.items()),
+            "blunders": sum(p for m, p in probs.items() if best - scores[m] >= BLUNDER_CP),
+            "probs": probs, "scores": scores}
+
+
+def is_trap(e):
+    return e["blunders"] >= TRAP_MASS and e["objective"] - e["v_trap"] >= TRAP_MARGIN
 
 
 def analyse_chunk(games, maia, pool, engines):
@@ -170,36 +207,39 @@ def analyse_chunk(games, maia, pool, engines):
 def find_starts(game):
     """The trap positions in a game and the moves that started them."""
     by_ply = {r["ply"]: r for r in game["records"]}
+    evals = {r["ply"]: evaluate(r) for r in game["records"]}
     starts = []
     for r in game["records"]:
-        if r["objective"] - r["v_trap"] < TRAP_MARGIN:
+        e = evals[r["ply"]]
+        if not is_trap(e):
             continue
         t = r["ply"]  # the human to move at t is the one to be trapped
-        setter_value = -r["v_trap"]  # for the trap setter
+        setter_value = -e["v_trap"]  # for the trap setter
         start, reach = t - 1, 1.0
         # Walk back: the human's move at start - 1, the setter's at start - 2.
         k = 1
         while k < MAX_SETTER_MOVES and start - 2 >= 0:
             human, setter = by_ply.get(start - 1), by_ply.get(start - 2)
-            if not human or not setter or human["p_played"] is None:
+            if not human or not setter or human["played"] is None:
                 break
+            p_human = evals[start - 1]["probs"].get(human["played"], 0.0)
             setter_here = by_ply.get(start)
             natural = setter_here and setter_here["cp_played"] is not None and \
                 setter_here["best"] - setter_here["cp_played"] <= NATURAL
-            if human["p_played"] < LIKELY or reach * human["p_played"] < REACH or not natural:
+            if p_human < LIKELY or reach * p_human < REACH or not natural:
                 break
-            reach *= human["p_played"]
+            reach *= p_human
             start -= 2
             k += 1
         s = by_ply.get(start)
         if not s or s["cp_played"] is None:
             continue
         practical = reach * setter_value + (1 - reach) * wl(s["cp_played"])
-        if practical < s["objective"]:
+        if practical < wl(s["best"]) - PRACTICAL_TOLERANCE:
             continue
         starts.append({"start": start, "trap": t, "reach": reach, "practical": practical,
-                       "objective_best": s["objective"], "objective_start": wl(s["cp_played"]),
-                       "trap_gap": r["objective"] - r["v_trap"]})
+                       "objective_best": wl(s["best"]), "objective_start": wl(s["cp_played"]),
+                       "trap_gap": e["objective"] - e["v_trap"]})
     # One start per starting move.
     unique = {}
     for s in starts:
@@ -211,11 +251,12 @@ def find_starts(game):
 def report(path):
     games = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
     positions = sum(len(g["records"]) for g in games)
-    traps = sum(1 for g in games for r in g["records"] if r["objective"] - r["v_trap"] >= TRAP_MARGIN)
+    traps = sum(1 for g in games for r in g["records"] if is_trap(evaluate(r)))
     starts = [(g, s) for g in games for s in find_starts(g)]
     longer = sum(1 for _, s in starts if s["trap"] - s["start"] > 1)
     lines = [f"{len(games)} games, {positions} positions analysed",
-             f"Trap positions (trap value at least {TRAP_MARGIN} below the objective value for the human to move):"
+             f"Trap positions (at least {100 * TRAP_MASS:.0f}% of the probability, shifted at {DEEP_RATE}, on moves"
+             f" losing {BLUNDER_CP} cp or more, and a trap value at least {TRAP_MARGIN} below the objective value):"
              f" {traps} ({100 * traps / max(positions, 1):.1f}%)",
              f"Moves that started a trap and pay off in practice: {len(starts)}, of which {longer} start it"
              f" a move or more before the trap"]
@@ -238,14 +279,17 @@ def report(path):
                     comment = (f"starts the trap: objective {s['objective_start']:+.2f}, best"
                                f" {s['objective_best']:+.2f}")
                 rec = next((r for r in g["records"] if r["ply"] == ply), None)
-                if ply > s["start"] and rec and rec.get("p_played") is not None and (ply - s["start"]) % 2 == 1:
-                    comment = f"Maia {100 * rec['p_played']:.0f}%"
+                if ply > s["start"] and rec and (ply - s["start"]) % 2 == 1:
+                    comment = f"{100 * evaluate(rec)['probs'].get(m, 0.0):.0f}%"
                 node = node.add_variation(chess.Move.from_uci(m), comment=comment)
             trap = next(r for r in g["records"] if r["ply"] == s["trap"])
-            node.comment = node.comment + (f"the trap: objective {trap['objective']:+.2f} for the side to move, trap value"
-                            f" {trap['v_trap']:+.2f}; Maia's likely moves: "
-                            + ", ".join(f"{node.board().san(chess.Move.from_uci(m))} {100 * p:.0f}%"
-                                        for m, p in trap["top"][:4]))
+            e = evaluate(trap)
+            likely = sorted(e["probs"].items(), key=lambda kv: -kv[1])[:5]
+            node.comment = node.comment + (
+                f"the trap: objective {e['objective']:+.2f} for the side to move, trap value {e['v_trap']:+.2f};"
+                f" likely moves (shifted) and Stockfish's loss: "
+                + ", ".join(f"{node.board().san(chess.Move.from_uci(m))} {100 * p:.0f}%"
+                            f" ({(trap['best'] - e['scores'][m]) / 100:.1f})" for m, p in likely))
             print(game, file=f, end="\n\n")
     return lines
 
