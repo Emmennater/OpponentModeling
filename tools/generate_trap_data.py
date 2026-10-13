@@ -16,10 +16,12 @@ against its objective value, tanh(Stockfish's best / 350), both as W - L for
 the side to move. These are the targets for the value at positions where the
 opponent is to move.
 
-The report then finds the trap positions: where at least TRAP_MASS of the
-(shifted) probability is on moves that lose BLUNDER_CP or more against the
-best, and V_trap is at least TRAP_MARGIN worse than the objective value, so
-that a spread of small inaccuracies does not count as a trap; and walks
+The report then finds the trap positions: where the human's most natural
+move, Maia's most likely before the shift (at least NATURAL_P), loses
+BLUNDER_CP or more against the best, and V_trap is at least TRAP_MARGIN worse
+than the objective value. A position where the best move is the most likely
+one is no trap, however many other moves would lose: the threat is plain to
+see. And walks
 back along the game to the move that set the trap: while the human's moves on
 the way were likely (Maia at least LIKELY), the whole line stays likely
 (REACH), and the trap setter's moves in between were natural (within NATURAL
@@ -72,7 +74,7 @@ PROCESSES = 16
 CP_SCALE = 350.0  # W - L = tanh(cp / 350)
 DEEP_RATE = 0.5  # as OpponentDeepTactics
 TRAP_MARGIN = 0.3
-TRAP_MASS = 0.35
+NATURAL_P = 0.3
 BLUNDER_CP = 200
 KEEP_PROBABILITY = 0.005  # moves stored with their probability and score
 LIKELY = 0.4
@@ -177,14 +179,17 @@ def evaluate(record, rate=DEEP_RATE):
         caught += probs[m] * rate_m
         probs[m] *= 1.0 - rate_m
     probs[best_move] += caught
+    natural, natural_p = max(((m, p / total) for m, p, _ in moves), key=lambda mp: mp[1])
     return {"objective": wl(best),
             "v_trap": sum(p * wl(scores[m]) for m, p in probs.items()),
-            "blunders": sum(p for m, p in probs.items() if best - scores[m] >= BLUNDER_CP),
+            "natural": natural, "natural_p": natural_p, "natural_loss": best - scores[natural],
             "probs": probs, "scores": scores}
 
 
 def is_trap(e):
-    return e["blunders"] >= TRAP_MASS and e["objective"] - e["v_trap"] >= TRAP_MARGIN
+    """The human's most natural move loses, and the trap value shows it."""
+    return (e["natural_p"] >= NATURAL_P and e["natural_loss"] >= BLUNDER_CP
+            and e["objective"] - e["v_trap"] >= TRAP_MARGIN)
 
 
 def analyse_chunk(games, maia, pool, engines):
@@ -255,8 +260,8 @@ def report(path):
     starts = [(g, s) for g in games for s in find_starts(g)]
     longer = sum(1 for _, s in starts if s["trap"] - s["start"] > 1)
     lines = [f"{len(games)} games, {positions} positions analysed",
-             f"Trap positions (at least {100 * TRAP_MASS:.0f}% of the probability, shifted at {DEEP_RATE}, on moves"
-             f" losing {BLUNDER_CP} cp or more, and a trap value at least {TRAP_MARGIN} below the objective value):"
+             f"Trap positions (Maia's most likely move, at least {100 * NATURAL_P:.0f}%, loses {BLUNDER_CP} cp or more,"
+             f" and the trap value, shifted at {DEEP_RATE}, is at least {TRAP_MARGIN} below the objective value):"
              f" {traps} ({100 * traps / max(positions, 1):.1f}%)",
              f"Moves that started a trap and pay off in practice: {len(starts)}, of which {longer} start it"
              f" a move or more before the trap"]
@@ -284,12 +289,13 @@ def report(path):
                 node = node.add_variation(chess.Move.from_uci(m), comment=comment)
             trap = next(r for r in g["records"] if r["ply"] == s["trap"])
             e = evaluate(trap)
-            likely = sorted(e["probs"].items(), key=lambda kv: -kv[1])[:5]
+            likely = sorted(trap["moves"], key=lambda x: -x[1])[:5]
+            total = sum(p for _, p, _ in trap["moves"]) or 1.0
             node.comment = node.comment + (
                 f"the trap: objective {e['objective']:+.2f} for the side to move, trap value {e['v_trap']:+.2f};"
-                f" likely moves (shifted) and Stockfish's loss: "
-                + ", ".join(f"{node.board().san(chess.Move.from_uci(m))} {100 * p:.0f}%"
-                            f" ({(trap['best'] - e['scores'][m]) / 100:.1f})" for m, p in likely))
+                f" Maia's likely moves and Stockfish's loss in pawns: "
+                + ", ".join(f"{node.board().san(chess.Move.from_uci(m))} {100 * p / total:.0f}%"
+                            f" ({(trap['best'] - cp) / 100:.1f})" for m, p, cp in likely))
             print(game, file=f, end="\n\n")
     return lines
 
