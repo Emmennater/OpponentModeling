@@ -36,6 +36,12 @@ class UciEngine {
   static std::unique_ptr<UciEngine> Start(const std::string& path);
   ~UciEngine();
 
+  // An engine at `path` from those kept between searches, or a new one;
+  // Release() returns it. Starting Stockfish takes a moment, which a short
+  // search cannot spare.
+  static std::unique_ptr<UciEngine> Acquire(const std::string& path);
+  static void Release(const std::string& path, std::unique_ptr<UciEngine> engine);
+
   // Scores `moves` (in UCI notation, castling as e1g1) of the position `fen`
   // by a search `depth` half-moves deep, stopping after `max_ms` at most.
   // Scores are in centipawns for the side to move, a mate is +-10000, and a

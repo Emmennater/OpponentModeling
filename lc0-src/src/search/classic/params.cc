@@ -596,14 +596,14 @@ const OptionId SearchParams::kOpponentHorizonId{
     "opponent's likely play, not how a long game against the model would "
     "end: a mistake the opponent might make later no longer props up a line "
     "that gives material away now. 0 is no limit."};
-const OptionId SearchParams::kOpponentSoundCautionId{
-    "opponent-sound-caution", "OpponentSoundCaution",
-    "With OpponentCaution, a plausible reply is judged by where it leaves "
-    "this engine if the opponent also finds its best plausible replies "
-    "afterwards, instead of by its expected value, which counts on the "
-    "opponent's later mistakes. Then a move whose plausible refutation wins "
-    "for the opponent loses value even when the line offers more traps "
-    "later."};
+const OptionId SearchParams::kOpponentStockfishFloorId{
+    "opponent-stockfish-floor", "OpponentStockfishFloor",
+    "With OpponentDeepTactics, Stockfish's scores of the opponent's moves also "
+    "set a floor under this engine's value in the positions they lead to: "
+    "this engine plays at least as well as best play there, and the opponent "
+    "can only add mistakes, so the value is at least Stockfish's evaluation. "
+    "Attacks the main network misjudges then count as soon as Stockfish has "
+    "seen them, without the search having to work them out."};
 const OptionId SearchParams::kOpponentWinValueId{
     "opponent-win-value", "OpponentWinValue",
     "With an opponent model, the main network's value (W - L, from -1 to 1) "
@@ -799,7 +799,7 @@ void SearchParams::Populate(OptionsParser* options) {
       0.05f;
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 16;
-  options->Add<BoolOption>(kOpponentSoundCautionId) = false;
+  options->Add<BoolOption>(kOpponentStockfishFloorId) = false;
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 1.0f) = 0.25f;
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 500;
@@ -917,7 +917,7 @@ SearchParams::SearchParams(const OptionsDict& options)
           options.Get<float>(kOpponentRefutationProbabilityId)),
       kOpponentCautionAhead(options.Get<float>(kOpponentCautionAheadId)),
       kOpponentHorizon(options.Get<int>(kOpponentHorizonId)),
-      kOpponentSoundCaution(options.Get<bool>(kOpponentSoundCautionId)),
+      kOpponentStockfishFloor(options.Get<bool>(kOpponentStockfishFloorId)),
       kOpponentWinValue(options.Get<float>(kOpponentWinValueId)),
       kOpponentDeepTactics(options.Get<float>(kOpponentDeepTacticsId)),
       kOpponentDeepTacticsVisits(options.Get<int>(kOpponentDeepTacticsVisitsId)),

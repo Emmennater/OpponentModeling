@@ -18,6 +18,8 @@
 
 #include "search/classic/uci_engine.h"
 
+#include <map>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 
@@ -173,6 +175,38 @@ struct UciEngine::Process {
   }
 };
 #endif
+
+namespace {
+std::mutex& PoolMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+std::map<std::string, std::vector<std::unique_ptr<UciEngine>>>& Pool() {
+  static auto* pool =
+      new std::map<std::string, std::vector<std::unique_ptr<UciEngine>>>();
+  return *pool;
+}
+}  // namespace
+
+std::unique_ptr<UciEngine> UciEngine::Acquire(const std::string& path) {
+  {
+    std::lock_guard<std::mutex> lock(PoolMutex());
+    auto& engines = Pool()[path];
+    if (!engines.empty()) {
+      auto engine = std::move(engines.back());
+      engines.pop_back();
+      return engine;
+    }
+  }
+  return Start(path);
+}
+
+void UciEngine::Release(const std::string& path,
+                        std::unique_ptr<UciEngine> engine) {
+  if (!engine) return;
+  std::lock_guard<std::mutex> lock(PoolMutex());
+  Pool()[path].push_back(std::move(engine));
+}
 
 UciEngine::UciEngine(std::unique_ptr<Process> process)
     : process_(std::move(process)) {}

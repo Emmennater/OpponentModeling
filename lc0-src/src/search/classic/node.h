@@ -214,14 +214,13 @@ class Node {
   void AdjustForTerminal(float v, float d, float m, int multivisit);
   // Opponent modeling: replaces Q's win-loss part (see OpponentBestLean).
   void SetWL(double wl) { wl_ = wl; }
-  // Opponent modeling: the value if the opponent finds its best plausible
-  // replies, without counting its later mistakes (see OpponentSoundCaution).
-  // Until it is set, and for terminal positions, it is the value itself.
-  float GetSoundWL() const {
-    return IsTerminal() || std::isnan(sound_wl_) ? static_cast<float>(wl_)
-                                                 : sound_wl_;
-  }
-  void SetSoundWL(float wl) { sound_wl_ = wl; }
+  // Opponent modeling: at a position where this engine is to move, the
+  // highest value the opponent, who moved into it, can have: Stockfish's
+  // evaluation for the opponent, as W - L and before the discount (see
+  // OpponentStockfishFloor). This engine does at least as well as best play,
+  // and the opponent can only add mistakes. NaN when not set.
+  float GetCeilingWL() const { return ceiling_wl_; }
+  void SetCeilingWL(float wl) { ceiling_wl_ = wl; }
   // Revert visits to a node which ended in a now reverted terminal.
   void RevertTerminalVisits(float v, float d, float m, int multivisit);
   // When search decides to treat one visit as several (in case of collisions
@@ -322,8 +321,8 @@ class Node {
   // but not finished). This value is added to n during selection which node
   // to pick in MCTS, and also when selecting the best move.
   uint32_t n_in_flight_ = 0;
-  // Opponent modeling: see GetSoundWL(). NaN until set.
-  float sound_wl_ = std::numeric_limits<float>::quiet_NaN();
+  // Opponent modeling: see GetCeilingWL(). NaN until set.
+  float ceiling_wl_ = std::numeric_limits<float>::quiet_NaN();
 
   // 2 byte fields.
   // Index of this node is parent's edge list.
