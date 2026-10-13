@@ -5,12 +5,14 @@ For every position in the games where a human is to move (up to MAX_PLY),
 Maia-3 (maia3-23m, on the CPU) gives the probability of each move, for the
 players' ratings, and Stockfish (MultiPV, DEPTH half-moves) scores each move.
 The probabilities are then shifted by what each move loses against
-Stockfish's best: each is weighted by exp(-loss / SHIFT_CP) and they are
-renormalized, so a move's odds against another fall with how much worse it
-is. A natural defense Maia already favors then becomes the clear choice (a
-player sees the plain threat), while a rare only move stays rare (a hidden
-defense is still missed), unlike a shift that hands the lost probability to
-the best move whatever its own. That gives the
+Stockfish's best, as far as a player would see it: the loss counts in
+proportion to how natural its refutation is, Maia's probability of
+Stockfish's reply (the second move of its line) for a player of the other
+side's rating. Each move is weighted by exp(-loss * P(refutation) / SHIFT_CP)
+and the probabilities renormalized. A move refuted by a plain recapture or
+capture then counts nearly its full loss and is mostly avoided, while one
+refuted by a sacrifice or a quiet move a player rarely finds keeps much of
+its probability. That gives the
 position's trap value for the human to move, a one-move expectimax:
 
     V_trap = sum over moves r of P(r) * tanh(Stockfish(r) / 350)
@@ -46,7 +48,7 @@ only analyses the data so far. Files go to lc0/finetune/trap_data/ (ignored by
 git): positions.jsonl (one game a line), summary.txt and traps.pgn.
 
 Usage (about 10-15 positions a second at depth 10 with 16 Stockfish processes, so
-3000 games of up to 40 half-moves take 2-3 hours):
+3000 games of up to 40 half-moves take 2-3 hours; --depth sets Stockfish's):
     .venv\\Scripts\\python tools\\generate_trap_data.py full_games.tsv
     .venv\\Scripts\\python tools\\generate_trap_data.py full_games.tsv --report
 """
@@ -73,6 +75,7 @@ MAX_PLY = 40  # positions after at most this many half-moves
 DEPTH = 10  # depth 8 misjudged sharp lines (it thought 13.hxg4 lost 2 pawns after 12...Ng4)
 PROCESSES = 16
 CP_SCALE = 350.0  # W - L = tanh(cp / 350)
+REFUTED_CP = 50  # a move losing at least this gets its refutation's probability
 SHIFT_CP = 150.0  # the multiplicative shift's scale: strength 2 of the engine's OpponentDeepTactics
 TRAP_MARGIN = 0.3
 TRAP_MASS = 0.35
@@ -115,10 +118,13 @@ def read_games(path):
 
 
 def score_moves(sf, board):
-    """Stockfish's score of every legal move, in centipawns for the mover."""
+    """Stockfish's score of every legal move, in centipawns for the mover,
+    with its reply (the refutation, for a losing move) or None."""
     n = board.legal_moves.count()
     info = sf.analyse(board, chess.engine.Limit(depth=DEPTH), multipv=n)
-    return {i["pv"][0].uci(): i["score"].relative.score(mate_score=10000) for i in info if "pv" in i}
+    return {i["pv"][0].uci(): (i["score"].relative.score(mate_score=10000),
+                               i["pv"][1].uci() if len(i["pv"]) > 1 else None)
+            for i in info if "pv" in i}
 
 
 def positions_of(game):
@@ -148,20 +154,45 @@ def maia_probs(game, boards, maia):
 
 def records_of(game, boards, probs, scores):
     """Each position: the likely moves (and the best and the played one) with
-    Maia's probability and Stockfish's score."""
+    Maia's probability, Stockfish's score and reply."""
     records = []
     for ply, b in boards:
         sc, pr = scores[ply], probs[ply]
         if not sc:
             continue
-        best = max(sc.values())
+        cp = {m: v[0] for m, v in sc.items()}
+        best = max(cp.values())
         played = game["moves"][ply] if ply < len(game["moves"]) else None
         keep = {m for m, p in pr.items() if p >= KEEP_PROBABILITY}
-        keep |= {max(sc, key=sc.get)} | ({played} if played else set())
+        keep |= {max(cp, key=cp.get)} | ({played} if played else set())
         records.append({"ply": ply, "best": best, "played": played,
-                        "cp_played": sc.get(played) if played else None,
-                        "moves": [[m, pr.get(m, 0.0), sc[m]] for m in keep if m in sc]})
+                        "cp_played": cp.get(played) if played else None,
+                        # move, Maia's probability, Stockfish's score, reply
+                        "moves": [[m, pr.get(m, 0.0), cp[m], sc[m][1]] for m in keep if m in sc]})
     return records
+
+
+def refutation_probs(game, boards, records, maia):
+    """Adds to each losing move (by REFUTED_CP or more) Maia's probability of
+    its refutation, for a player of the other side's rating."""
+    by_ply = dict(boards)
+    jobs = {True: [], False: []}  # by the refuter's color
+    for r in records:
+        b = by_ply[r["ply"]]
+        for entry in r["moves"]:
+            m, _, cp, reply = entry
+            if reply is None or r["best"] - cp < REFUTED_CP:
+                continue
+            child = b.copy()
+            child.push_uci(m)
+            jobs[child.turn].append((entry, child, reply))
+    for white, items in jobs.items():
+        if not items:
+            continue
+        maia.self_elo, maia.oppo_elo = (game["white"], game["black"]) if white else (game["black"], game["white"])
+        policies, _ = maia.run([child for _, child, _ in items])
+        for (entry, _, reply), policy in zip(items, policies):
+            entry.append({mv.uci(): p for mv, p in policy.items()}.get(reply, 0.0))
 
 
 def evaluate(record):
@@ -170,8 +201,11 @@ def evaluate(record):
     SHIFT_CP)."""
     moves = record["moves"]
     best = record["best"]
-    scores = {m: cp for m, _, cp in moves}
-    weights = {m: p * math.exp(-(best - scores[m]) / SHIFT_CP) for m, p, _ in moves}
+    scores = {e[0]: e[2] for e in moves}
+    # The loss counts in proportion to how natural its refutation is: entry
+    # [move, probability, score, reply, P(reply)], P(reply) when it loses.
+    weights = {e[0]: e[1] * math.exp(-(best - e[2]) * (e[4] if len(e) > 4 else 1.0) / SHIFT_CP)
+               for e in moves}
     total = sum(weights.values()) or 1.0
     probs = {m: w / total for m, w in weights.items()}
     return {"objective": wl(best),
@@ -197,8 +231,12 @@ def analyse_chunk(games, maia, pool, engines):
     boards = [positions_of(g) for g in games]
     futures = [[pool.submit(job, item) for item in bs] for bs in boards]
     probs = [maia_probs(g, bs, maia) for g, bs in zip(games, boards)]
-    return [records_of(g, bs, pr, dict(f.result() for f in fs))
-            for g, bs, pr, fs in zip(games, boards, probs, futures)]
+    results = []
+    for g, bs, pr, fs in zip(games, boards, probs, futures):
+        records = records_of(g, bs, pr, dict(f.result() for f in fs))
+        refutation_probs(g, bs, records, maia)
+        results.append(records)
+    return results
 
 
 def find_starts(game):
@@ -292,10 +330,13 @@ def report(path):
 
 
 def main():
+    global DEPTH
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("games", help="full games, as written by tools/fetch_lichess_games.py")
     parser.add_argument("--report", action="store_true", help="only analyse the data so far")
+    parser.add_argument("--depth", type=int, default=DEPTH, help=f"Stockfish's depth (default {DEPTH})")
     args = parser.parse_args()
+    DEPTH = args.depth
     WORK.mkdir(parents=True, exist_ok=True)
     path = WORK / "positions.jsonl"
 
