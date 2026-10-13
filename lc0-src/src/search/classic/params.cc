@@ -639,6 +639,22 @@ const OptionId SearchParams::kOpponentStockfishPathId{
     "opponent-stockfish-path", "OpponentStockfishPath",
     "With OpponentDeepTactics, the Stockfish executable (any UCI engine with "
     "MultiPV) that does the closer look."};
+const OptionId SearchParams::kOpponentWideCandidatesId{
+    "opponent-wide-candidates", "OpponentWideCandidates",
+    "With an opponent model, a fair hearing below the root for this engine's "
+    "moves the main network rates low, such as a sacrifice whose attack only "
+    "shows after some search: at a position where this engine is to move "
+    "with at least OpponentWideVisits visits, each of this many moves with "
+    "the highest prior gets at least OpponentWideShare / this of the "
+    "position's visits. 0 turns this off."};
+const OptionId SearchParams::kOpponentWideShareId{
+    "opponent-wide-share", "OpponentWideShare",
+    "With OpponentWideCandidates, the share of a position's visits set aside "
+    "for its candidates, split equally among them."};
+const OptionId SearchParams::kOpponentWideVisitsId{
+    "opponent-wide-visits", "OpponentWideVisits",
+    "With OpponentWideCandidates, the visits a position needs before its "
+    "candidates get their share."};
 const OptionId SearchParams::kTreeExportFileId{
     "tree-export-file", "TreeExportFile",
     "After each search, the search tree is written to this file as PGN: this "
@@ -790,6 +806,9 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 4;
   options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 8;
   options->Add<StringOption>(kOpponentStockfishPathId) = "";
+  options->Add<IntOption>(kOpponentWideCandidatesId, 0, 64) = 0;
+  options->Add<FloatOption>(kOpponentWideShareId, 0.0f, 1.0f) = 0.25f;
+  options->Add<IntOption>(kOpponentWideVisitsId, 1, 100000000) = 2000;
   options->Add<StringOption>(kTreeExportFileId) = "";
   options->Add<IntOption>(kTreeExportDepthId, 1, 100) = 12;
   options->Add<IntOption>(kTreeExportWidthId, 1, 100) = 4;
@@ -905,6 +924,9 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentDeepTacticsDepth(options.Get<int>(kOpponentDeepTacticsDepthId)),
       kOpponentDeepTacticsThreads(
           options.Get<int>(kOpponentDeepTacticsThreadsId)),
+      kOpponentWideCandidates(options.Get<int>(kOpponentWideCandidatesId)),
+      kOpponentWideShare(options.Get<float>(kOpponentWideShareId)),
+      kOpponentWideVisits(options.Get<int>(kOpponentWideVisitsId)),
       kOpponentDiscount(options.Get<float>(kOpponentDiscountId)),
       kOpponentEngineMix(options.Get<float>(kOpponentEngineMixId)),
       kOpponentTactics(options.Get<float>(kOpponentTacticsId)) {}

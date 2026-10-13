@@ -319,6 +319,9 @@ class SearchParams : public BaseSearchParams {
   int GetOpponentDeepTacticsThreads() const {
     return kOpponentDeepTacticsThreads;
   }
+  int GetOpponentWideCandidates() const { return kOpponentWideCandidates; }
+  float GetOpponentWideShare() const { return kOpponentWideShare; }
+  int GetOpponentWideVisits() const { return kOpponentWideVisits; }
   std::string GetOpponentStockfishPath() const {
     return options_.Get<std::string>(kOpponentStockfishPathId);
   }
@@ -356,6 +359,9 @@ class SearchParams : public BaseSearchParams {
   static const OptionId kOpponentDeepTacticsDepthId;
   static const OptionId kOpponentDeepTacticsThreadsId;
   static const OptionId kOpponentStockfishPathId;
+  static const OptionId kOpponentWideCandidatesId;
+  static const OptionId kOpponentWideShareId;
+  static const OptionId kOpponentWideVisitsId;
   static const OptionId kTreeExportFileId;
   static const OptionId kTreeExportDepthId;
   static const OptionId kTreeExportWidthId;
@@ -380,6 +386,9 @@ class SearchParams : public BaseSearchParams {
   const int kOpponentDeepTacticsVisits;
   const int kOpponentDeepTacticsDepth;
   const int kOpponentDeepTacticsThreads;
+  const int kOpponentWideCandidates;
+  const float kOpponentWideShare;
+  const int kOpponentWideVisits;
   const float kOpponentDiscount;
   const float kOpponentEngineMix;
   const float kOpponentTactics;

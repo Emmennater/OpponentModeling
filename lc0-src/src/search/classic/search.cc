@@ -2395,6 +2395,58 @@ void SearchWorker::PickNodesToExtendTask(
             new_visits = cur_limit;
           }
         } else {
+        // Opponent modeling: below the root, at a position where this engine
+        // is to move with enough visits, each of the moves with the highest
+        // priors (the edges are sorted by prior) first gets its share of the
+        // visits (see OpponentWideCandidates), so that a move the main
+        // network rates low, such as a sacrifice whose attack only shows
+        // after some search, is not starved.
+        const int depth = static_cast<int>(current_path.size()) + base_depth;
+        const int wide = std::min<int>(params_.GetOpponentWideCandidates(),
+                                       max_needed);
+        if (search_->opponent_backend_ && !is_root_node && wide > 1 &&
+            depth % 2 == 1 &&
+            node->GetN() >=
+                static_cast<uint32_t>(params_.GetOpponentWideVisits())) {
+          for (int idx = cache_filled_idx + 1; idx < wide; ++idx) {
+            if (idx == 0) {
+              cur_iters[idx] = node->Edges();
+            } else {
+              cur_iters[idx] = cur_iters[idx - 1];
+              ++cur_iters[idx];
+            }
+            current_nstarted[idx] = cur_iters[idx].GetNStarted();
+            current_score[idx] = current_pol[idx] * puct_mult /
+                                     (1 + current_nstarted[idx]) +
+                                 current_util[idx];
+            cache_filled_idx = idx;
+          }
+          const float share =
+              params_.GetOpponentWideShare() * node->GetNStarted() / wide;
+          float largest_deficit = 0.0f;
+          for (int idx = 0; idx < wide; ++idx) {
+            const float deficit = share - current_nstarted[idx];
+            if (deficit > largest_deficit) {
+              largest_deficit = deficit;
+              best_idx = idx;
+            }
+          }
+        }
+        if (best_idx >= 0) {
+          best_edge = cur_iters[best_idx];
+          // An unvisited move gets one visit, as it has to be evaluated
+          // before it can take more.
+          new_visits = current_nstarted[best_idx] == 0
+                           ? 1
+                           : std::min<int>(
+                                 cur_limit,
+                                 static_cast<int>(
+                                     params_.GetOpponentWideShare() *
+                                         node->GetNStarted() / wide -
+                                     current_nstarted[best_idx]) +
+                                     1);
+          max_limit = std::min(max_limit, new_visits);
+        } else {
         // Perform UCT for current node.
         float best = std::numeric_limits<float>::lowest();
         float best_without_u = std::numeric_limits<float>::lowest();
@@ -2472,6 +2524,7 @@ void SearchWorker::PickNodesToExtendTask(
         } else {
           // No second best - only one edge, so everything goes in here.
           new_visits = cur_limit;
+        }
         }
         }
         if (best_idx >= vtp_last_filled.back()) {
