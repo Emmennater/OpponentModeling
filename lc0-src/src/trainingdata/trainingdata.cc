@@ -119,22 +119,9 @@ void V6TrainingDataArray::Add(const classic::Node* node,
                               std::span<Move> legal_moves,
                               const std::optional<EvalResult>& nneval,
                               float policy_softmax_temp) {
-  V6TrainingData result;
-  const auto& position = history.Last();
-
-  // Set version.
-  result.version = 6;
-  result.input_format = input_format_;
-
-  // Populate planes.
   int transform;
-  InputPlanes planes = EncodePositionForNN(
-      input_format_, history, 8, fill_empty_history_[position.IsBlackToMove()],
-      &transform);
-  int plane_idx = 0;
-  for (auto& plane : result.planes) {
-    plane = ReverseBitsInBytes(planes[plane_idx++].mask);
-  }
+  V6TrainingData result = NewFrame(history, &transform);
+  const auto& position = history.Last();
 
   // Populate probabilities.
   auto total_n = node->GetChildrenVisits();
@@ -174,51 +161,9 @@ void V6TrainingDataArray::Add(const classic::Node* node,
   }
   result.policy_kld = kld_sum;
 
-  const auto& castlings = position.GetBoard().castlings();
-  // Populate castlings.
-  // For non-frc trained nets, just send 1 like we used to.
-  uint8_t our_queen_side = 1;
-  uint8_t our_king_side = 1;
-  uint8_t their_queen_side = 1;
-  uint8_t their_king_side = 1;
-  // If frc trained, send the bit mask representing rook position.
-  if (Is960CastlingFormat(input_format_)) {
-    our_queen_side <<= castlings.our_queenside_rook.idx;
-    our_king_side <<= castlings.our_kingside_rook.idx;
-    their_queen_side <<= castlings.their_queenside_rook.idx;
-    their_king_side <<= castlings.their_kingside_rook.idx;
-  }
-
-  result.castling_us_ooo = castlings.we_can_000() ? our_queen_side : 0;
-  result.castling_us_oo = castlings.we_can_00() ? our_king_side : 0;
-  result.castling_them_ooo = castlings.they_can_000() ? their_queen_side : 0;
-  result.castling_them_oo = castlings.they_can_00() ? their_king_side : 0;
-
-  // Other params.
-  if (IsCanonicalFormat(input_format_)) {
-    result.side_to_move_or_enpassant =
-        position.GetBoard().en_passant().as_int() >> 56;
-    if ((transform & FlipTransform) != 0) {
-      result.side_to_move_or_enpassant =
-          ReverseBitsInBytes(result.side_to_move_or_enpassant);
-    }
-    // Send transform in deprecated move count so rescorer can reverse it to
-    // calculate the actual move list from the input data.
-    result.invariance_info =
-        transform | (position.IsBlackToMove() ? (1u << 7) : 0u);
-  } else {
-    result.side_to_move_or_enpassant = position.IsBlackToMove() ? 1 : 0;
-    result.invariance_info = 0;
-  }
   if (best_is_proven) {
     result.invariance_info |= 1u << 3;  // Best node is proven best;
   }
-  result.dummy = 0;
-  result.rule50_count = position.GetRule50Ply();
-
-  // Game result is undecided.
-  result.result_q = 0;
-  result.result_d = 1;
 
   classic::Eval orig_eval;
   if (nneval) {
@@ -267,6 +212,103 @@ void V6TrainingDataArray::Add(const classic::Node* node,
   // Unknown here - will be filled in once the full data has been collected.
   result.plies_left = 0;
   training_data_.push_back(result);
+}
+
+void V6TrainingDataArray::AddOpponentMove(const PositionHistory& history,
+                                          std::span<const Move> legal_moves,
+                                          std::span<const float> probabilities,
+                                          size_t played,
+                                          const EvalResult& nneval) {
+  int transform;
+  V6TrainingData result = NewFrame(history, &transform);
+
+  // The opponent's probabilities, after its shifts, for its legal moves.
+  std::fill(std::begin(result.probabilities), std::end(result.probabilities),
+            -1);
+  size_t best = 0;
+  for (size_t i = 0; i < legal_moves.size(); ++i) {
+    result.probabilities[MoveToNNIndex(legal_moves[i], transform)] =
+        probabilities[i];
+    if (probabilities[i] > probabilities[best]) best = i;
+  }
+  result.policy_kld = 0;
+
+  // No search: every evaluation is the main network's.
+  float q, d;
+  std::tie(q, d) = DriftCorrect(nneval.q, nneval.d);
+  result.root_q = result.best_q = result.played_q = result.orig_q = q;
+  result.root_d = result.best_d = result.played_d = result.orig_d = d;
+  result.root_m = result.best_m = result.played_m = result.orig_m = nneval.m;
+
+  result.visits = 0;  // Marks the opponent's moves.
+  result.best_idx = MoveToNNIndex(legal_moves[best], transform);
+  result.played_idx = MoveToNNIndex(legal_moves[played], transform);
+  result.reserved = 0;
+  result.plies_left = 0;
+  training_data_.push_back(result);
+}
+
+V6TrainingData V6TrainingDataArray::NewFrame(const PositionHistory& history,
+                                             int* transform) const {
+  V6TrainingData result;
+  const auto& position = history.Last();
+
+  // Set version.
+  result.version = 6;
+  result.input_format = input_format_;
+
+  // Populate planes.
+  InputPlanes planes = EncodePositionForNN(
+      input_format_, history, 8, fill_empty_history_[position.IsBlackToMove()],
+      transform);
+  int plane_idx = 0;
+  for (auto& plane : result.planes) {
+    plane = ReverseBitsInBytes(planes[plane_idx++].mask);
+  }
+
+  const auto& castlings = position.GetBoard().castlings();
+  // Populate castlings.
+  // For non-frc trained nets, just send 1 like we used to.
+  uint8_t our_queen_side = 1;
+  uint8_t our_king_side = 1;
+  uint8_t their_queen_side = 1;
+  uint8_t their_king_side = 1;
+  // If frc trained, send the bit mask representing rook position.
+  if (Is960CastlingFormat(input_format_)) {
+    our_queen_side <<= castlings.our_queenside_rook.idx;
+    our_king_side <<= castlings.our_kingside_rook.idx;
+    their_queen_side <<= castlings.their_queenside_rook.idx;
+    their_king_side <<= castlings.their_kingside_rook.idx;
+  }
+
+  result.castling_us_ooo = castlings.we_can_000() ? our_queen_side : 0;
+  result.castling_us_oo = castlings.we_can_00() ? our_king_side : 0;
+  result.castling_them_ooo = castlings.they_can_000() ? their_queen_side : 0;
+  result.castling_them_oo = castlings.they_can_00() ? their_king_side : 0;
+
+  // Other params.
+  if (IsCanonicalFormat(input_format_)) {
+    result.side_to_move_or_enpassant =
+        position.GetBoard().en_passant().as_int() >> 56;
+    if ((*transform & FlipTransform) != 0) {
+      result.side_to_move_or_enpassant =
+          ReverseBitsInBytes(result.side_to_move_or_enpassant);
+    }
+    // Send transform in deprecated move count so rescorer can reverse it to
+    // calculate the actual move list from the input data.
+    result.invariance_info =
+        *transform | (position.IsBlackToMove() ? (1u << 7) : 0u);
+  } else {
+    result.side_to_move_or_enpassant = position.IsBlackToMove() ? 1 : 0;
+    result.invariance_info = 0;
+  }
+  result.dummy = 0;
+  result.rule50_count = position.GetRule50Ply();
+
+  // Game result is undecided.
+  result.result_q = 0;
+  result.result_d = 1;
+  return result;
 }
 
 }  // namespace lczero

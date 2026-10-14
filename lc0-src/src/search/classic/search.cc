@@ -39,6 +39,7 @@
 #include <thread>
 
 #include "neural/encoder.h"
+#include "search/classic/opponent_model.h"
 #include "search/classic/opponent_tactics.h"
 #include "search/classic/node.h"
 #include "utils/fastmath.h"
@@ -1363,7 +1364,6 @@ void Search::QueueDeepTactics(const Node* node) REQUIRES(nodes_mutex_) {
 void Search::DeepTacticsThread() {
   const int depth = params_.GetOpponentDeepTacticsDepth();
   const float strength = params_.GetOpponentDeepTactics();
-  constexpr float kLossScaleCp = 300.0f;
   // A search stops Stockfish's at this time at the latest.
   constexpr int kMaxMs = 2000;
   const std::string path = params_.GetOpponentStockfishPath();
@@ -1420,25 +1420,10 @@ void Search::DeepTacticsThread() {
       }
       LOGFILE << oss.str();
     }
-    // Each move's probability is weighted by
-    // exp(-OpponentDeepTactics * loss / 300 cp), its loss against the
-    // best-scoring move, and the probabilities renormalized: a blunder is the
-    // more likely to be spotted the more it loses, and a move's odds against
-    // another fall with how much worse it is. A plain defense the opponent
-    // model already favors then becomes the clear choice, while a hidden only
-    // move it gives little stays unlikely.
+    // The closer look's shift (see ShiftForCloserLook).
     std::vector<float> policy;
     for (const auto& edge : node->Edges()) policy.push_back(edge.GetP());
-    const int best_score = *std::max_element(scores.begin(), scores.end());
-    float total = 0.0f;
-    for (size_t i = 0; i < policy.size(); ++i) {
-      const float loss = static_cast<float>(best_score - scores[i]);
-      policy[i] *= std::exp(-strength * loss / kLossScaleCp);
-      total += policy[i];
-    }
-    if (total > 0.0f) {
-      for (float& p : policy) p /= total;
-    }
+    ShiftForCloserLook(policy, scores, strength);
     for (size_t i = 0; auto& edge : node->Edges()) {
       edge.edge()->SetP(policy[i++]);
     }
@@ -2951,54 +2936,20 @@ void SearchWorker::FetchSingleNodeResult(NodeToProcess* node_to_process) {
   std::vector<float>& policy = node_to_process->opponent_queried
                                    ? node_to_process->opponent_eval->p
                                    : node_to_process->eval->p;
-  // A share of the main network's probabilities, for the same moves in the
-  // same order, makes the modeled opponent stronger (OpponentEngineMix).
+  // The opponent model's probabilities are shifted as opponent_model.h
+  // describes, in the same order as for an opponent player in self-play.
   const float engine_mix = params_.GetOpponentEngineMix();
   if (node_to_process->opponent_queried && engine_mix > 0.0f) {
-    const std::vector<float>& engine_policy = node_to_process->eval->p;
-    for (size_t i = 0; i < policy.size(); ++i) {
-      policy[i] += engine_mix * (engine_policy[i] - policy[i]);
-    }
+    MixInEnginePolicy(policy, node_to_process->eval->p, engine_mix);
   }
-  // The opponent sees some of the tactics a quick look shows: each move gives
-  // up to OpponentTactics of its probability to the best-scoring move, more
-  // the more it loses, as in StockfishTrapFinder's MaiaModel. Measured on
-  // real games, the opponent then finds clear tactical shots more often,
-  // while quiet positions change little (see LC0_PLAN.md).
   const auto& tactics_scores = node_to_process->tactics_scores;
   if (!tactics_scores.empty() && tactics_scores.size() == policy.size()) {
-    constexpr float kLossScaleCp = 300.0f;
-    const float max_rate = params_.GetOpponentTactics();
-    size_t best = 0;
-    for (size_t i = 1; i < policy.size(); ++i) {
-      if (tactics_scores[i] > tactics_scores[best] ||
-          (tactics_scores[i] == tactics_scores[best] &&
-           policy[i] > policy[best])) {
-        best = i;
-      }
-    }
-    float caught = 0.0f;
-    for (size_t i = 0; i < policy.size(); ++i) {
-      const float loss = static_cast<float>(tactics_scores[best] -
-                                            tactics_scores[i]);
-      const float rate = max_rate * (1.0f - std::exp(-loss / kLossScaleCp));
-      caught += policy[i] * rate;
-      policy[i] *= 1.0f - rate;
-    }
-    policy[best] += caught;
+    ShiftForQuickTactics(policy, tactics_scores, params_.GetOpponentTactics());
   }
-  // Moves below OpponentMinProbability are taken as never played. A move
-  // with probability 0 gets no visits at an opponent node.
+  // A move with probability 0 gets no visits at an opponent node.
   const float min_probability = params_.GetOpponentMinProbability();
-  if (node_to_process->opponent_queried && min_probability > 0.0f &&
-      !policy.empty()) {
-    const float top = *std::max_element(policy.begin(), policy.end());
-    float kept = 0.0f;
-    for (float& p : policy) {
-      if (p < min_probability && p < top) p = 0.0f;
-      kept += p;
-    }
-    for (float& p : policy) p /= kept;
+  if (node_to_process->opponent_queried && min_probability > 0.0f) {
+    DropUnlikelyMoves(policy, min_probability);
   }
   for (size_t p_idx = 0; auto& edge : node->Edges()) {
     edge.edge()->SetP(policy[p_idx++]);

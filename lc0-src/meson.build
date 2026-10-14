@@ -197,6 +197,7 @@ files += [
   'src/neural/xla/onnx2hlo.cc',
   'src/neural/xla/print_hlo.cc',
   'src/neural/xla/xla_tensor.cc',
+  'src/search/classic/opponent_model.cc',
   'src/search/classic/params.cc',
   'src/search/classic/search.cc',
   'src/search/classic/uci_engine.cc',

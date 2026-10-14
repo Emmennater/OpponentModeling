@@ -49,11 +49,28 @@ class V6TrainingDataArray {
            std::span<Move> legal_moves,
            const std::optional<EvalResult>& nneval, float policy_softmax_temp);
 
+  // Opponent modeling: adds a move of an opponent player in self-play, which
+  // plays from the opponent model's probabilities instead of searching (see
+  // selfplay/game.cc). The policy target is those probabilities, for
+  // `legal_moves` as the board generates them; the values are the main
+  // network's `nneval` of the position. visits is 0, which tells these
+  // positions apart from searched ones.
+  void AddOpponentMove(const PositionHistory& history,
+                       std::span<const Move> legal_moves,
+                       std::span<const float> probabilities, size_t played,
+                       const EvalResult& nneval);
+
   // Writes training data to a file.
   void Write(TrainingDataWriter* writer, GameResult result,
              bool adjudicated) const;
 
  private:
+  // A frame for the position at the end of `history`, without its
+  // probabilities, evaluations and moves. *transform receives the
+  // transform the input format applied.
+  V6TrainingData NewFrame(const PositionHistory& history,
+                          int* transform) const;
+
   std::vector<V6TrainingData> training_data_;
   FillEmptyHistory fill_empty_history_[2];
   pblczero::NetworkFormat::InputFormat input_format_;

@@ -29,10 +29,8 @@
 #include "search/classic/search.h"
 #include "search/classic/stoppers/factory.h"
 #include "neural/memcache.h"
-#ifdef USE_MAIA3
-#include "neural/backends/network_maia3.h"
-#endif
 #include "neural/register.h"
+#include "search/classic/opponent_model.h"
 #include "search/register.h"
 #include "search/search.h"
 #include "src/neural/shared_params.h"
@@ -54,36 +52,8 @@ const OptionId kClearTree{
      .help_text = "Clear the tree before the next search.",
      .visibility = OptionId::kProOnly}};
 
-// Opponent modeling (see LC0_PLAN.md)
-const OptionId kOpponentModelWeightsId{
-    {.long_flag = "opponent-model-weights",
-     .uci_option = "OpponentModelWeights",
-     .help_text =
-         "Network that predicts the opponent's moves, such as a Maia network. "
-         "When set, the opponent's moves are sampled from it in proportion to "
-         "its move probabilities, instead of searched for the best. A .onnx "
-         "file is read as a Maia-3 network (see tools/export_maia3.py). Empty "
-         "turns opponent modeling off.",
-     .visibility = OptionId::kAlwaysVisible}};
-const OptionId kOpponentModelTemperatureId{
-    {.long_flag = "opponent-model-temperature",
-     .uci_option = "OpponentModelTemperature",
-     .help_text =
-         "Temperature for the opponent model's move probabilities. Above 1 "
-         "makes the opponent less predictable, below 1 more.",
-     .visibility = OptionId::kAlwaysVisible}};
-const OptionId kOpponentModelRatingId{
-    {.long_flag = "opponent-model-rating",
-     .uci_option = "OpponentModelRating",
-     .help_text = "Rating of the modeled opponent, for Maia-3 opponent models.",
-     .visibility = OptionId::kAlwaysVisible}};
-const OptionId kOpponentModelOwnRatingId{
-    {.long_flag = "opponent-model-own-rating",
-     .uci_option = "OpponentModelOwnRating",
-     .help_text =
-         "Rating the Maia-3 opponent model is told the opponent is playing "
-         "against, that is the rating of the side this engine plays.",
-     .visibility = OptionId::kAlwaysVisible}};
+// Opponent modeling (see LC0_PLAN.md; the model's options are in
+// opponent_model.h)
 const OptionId kOpponentTreeReuseId{
     {.long_flag = "opponent-tree-reuse",
      .uci_option = "OpponentTreeReuse",
@@ -203,30 +173,7 @@ void ClassicSearch::UpdateOpponentModel() {
   opponent_weights_.clear();
   if (weights.empty()) return;
 
-  // The same backend settings as the main network, with the opponent model's
-  // weights and temperature. Lc0 applies the temperature inside the backend.
-  opponent_options_ = std::make_unique<OptionsDict>(options_);
-  opponent_options_->Set<std::string>(SharedBackendParams::kWeightsId, weights);
-  opponent_options_->Set<float>(SharedBackendParams::kPolicySoftmaxTemp,
-                                temperature);
-  if (is_maia3) {
-#ifdef USE_MAIA3
-    // Maia-3 is not an Lc0 network and has its own backend
-    opponent_backend_ = CreateMemCache(
-        MakeMaia3Backend({.model_path = weights,
-                          .temperature = temperature,
-                          .rating = rating,
-                          .opponent_rating = own_rating}),
-        *opponent_options_);
-#else
-    throw Exception("This Lc0 was built without ONNX Runtime, so it cannot "
-                    "run Maia-3 opponent models.");
-#endif
-  } else {
-    opponent_backend_ = CreateMemCache(
-        BackendManager::Get()->CreateFromParams(*opponent_options_),
-        *opponent_options_);
-  }
+  opponent_backend_ = CreateOpponentModelBackend(*options_, &opponent_options_);
   opponent_weights_ = weights;
   opponent_temperature_ = temperature;
   opponent_rating_ = rating;
@@ -288,11 +235,7 @@ class ClassicSearchFactory : public SearchFactory {
     PopulateTimeManagementOptions(RunType::kUci, parser);
 
     parser->Add<ButtonOption>(kClearTree);
-    parser->Add<StringOption>(kOpponentModelWeightsId) = "";
-    parser->Add<FloatOption>(kOpponentModelTemperatureId, 0.1f, 10.0f) = 1.0f;
-    parser->Add<FloatOption>(kOpponentModelRatingId, 500.0f, 3000.0f) = 1500.0f;
-    parser->Add<FloatOption>(kOpponentModelOwnRatingId, 500.0f, 3000.0f) =
-        1500.0f;
+    PopulateOpponentModelOptions(parser);
     parser->Add<BoolOption>(kOpponentTreeReuseId) = false;
   }
 };

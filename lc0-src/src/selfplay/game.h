@@ -33,6 +33,7 @@
 #include "neural/backend.h"
 #include "search/classic/search.h"
 #include "search/classic/stoppers/stoppers.h"
+#include "search/classic/uci_engine.h"
 #include "trainingdata/trainingdata.h"
 #include "utils/optionsparser.h"
 
@@ -60,6 +61,10 @@ struct PlayerOptions {
   const OptionsDict* uci_options;
   // Limits to use for every move.
   SelfPlayLimits search_limits;
+  // Opponent modeling: when set, the player does not search but plays from
+  // this opponent model's probabilities (see SelfPlayGame::PlayOpponentMove),
+  // and `backend` is unused.
+  Backend* opponent_backend = nullptr;
 };
 
 // Plays a single game vs itself.
@@ -71,6 +76,7 @@ class SelfPlayGame {
   // and white (useful i.e. when they use different networks).
   SelfPlayGame(PlayerOptions white, PlayerOptions black, bool shared_tree,
                const Opening& opening);
+  ~SelfPlayGame();
 
   // Populate command line options that it uses.
   static void PopulateUciParams(OptionsParser* options);
@@ -97,6 +103,14 @@ class SelfPlayGame {
   uint64_t nodes_total_ = 0;
 
  private:
+  // Opponent modeling: plays the move of the opponent player options_[idx]:
+  // drawn from the opponent model's probabilities after the shifts the
+  // search assumes at its opponent nodes, in the same order (see
+  // search/classic/opponent_model.h), with the player's own options. The main
+  // network, for OpponentEngineMix and the training data, is the other
+  // player's.
+  void PlayOpponentMove(int idx, bool training);
+
   // options_[0] is for white player, [1] for black.
   PlayerOptions options_[2];
   // Node tree for player1 and player2. If the tree is shared between players,
@@ -124,6 +138,11 @@ class SelfPlayGame {
   V6TrainingDataArray training_data_;
 
   std::unique_ptr<SyzygyTablebase> syzygy_tb_;
+
+  // Opponent modeling: Stockfish for an opponent player's closer look
+  // (OpponentDeepTactics), from the pool kept between games.
+  std::unique_ptr<classic::UciEngine> stockfish_;
+  std::string stockfish_path_;
 };
 
 }  // namespace lczero

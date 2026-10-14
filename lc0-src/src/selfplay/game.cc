@@ -29,6 +29,8 @@
 
 #include <algorithm>
 
+#include "search/classic/opponent_model.h"
+#include "search/classic/opponent_tactics.h"
 #include "search/classic/stoppers/common.h"
 #include "search/classic/stoppers/factory.h"
 #include "utils/random.h"
@@ -128,6 +130,93 @@ SelfPlayGame::SelfPlayGame(PlayerOptions white, PlayerOptions black,
   start_ply_ = ply;
 }
 
+SelfPlayGame::~SelfPlayGame() {
+  if (stockfish_) {
+    classic::UciEngine::Release(stockfish_path_, std::move(stockfish_));
+  }
+}
+
+void SelfPlayGame::PlayOpponentMove(int idx, bool training) {
+  const PositionHistory& history = tree_[idx]->GetPositionHistory();
+  const Position& position = history.Last();
+  const bool black_to_move = position.IsBlackToMove();
+  const std::vector<Move> legal_moves = position.GetBoard().GenerateLegalMoves();
+  const EvalPosition eval_position{history.GetPositions(), legal_moves};
+  const classic::SearchParams params(*options_[idx].uci_options);
+
+  std::vector<float> policy = options_[idx]
+                                  .opponent_backend->EvaluateBatch(
+                                      std::span(&eval_position, 1))[0]
+                                  .p;
+  const float engine_mix = params.GetOpponentEngineMix();
+  std::optional<EvalResult> main_eval;
+  if (training || engine_mix > 0.0f) {
+    main_eval = options_[1 - idx].backend->EvaluateBatch(
+        std::span(&eval_position, 1))[0];
+  }
+  if (engine_mix > 0.0f) {
+    classic::MixInEnginePolicy(policy, main_eval->p, engine_mix);
+  }
+  const std::string fen = PositionToFen(position);
+  if (params.GetOpponentTactics() > 0.0f) {
+    std::vector<classic::TacticsMove> moves;
+    moves.reserve(legal_moves.size());
+    for (Move move : legal_moves) {
+      if (black_to_move) move.Flip();
+      moves.push_back(
+          {move.from().as_idx(), move.to().as_idx(),
+           move.is_promotion() ? move.promotion().ToString()[0] : '\0'});
+    }
+    classic::ShiftForQuickTactics(
+        policy, classic::ScoreOpponentMoves(fen, moves),
+        params.GetOpponentTactics());
+  }
+  if (params.GetOpponentMinProbability() > 0.0f) {
+    classic::DropUnlikelyMoves(policy, params.GetOpponentMinProbability());
+  }
+  // The search gives a position the closer look once it has enough visits
+  // (OpponentDeepTacticsVisits); the opponent's actual move always gets it.
+  if (params.GetOpponentDeepTactics() > 0.0f && legal_moves.size() > 1) {
+    if (!stockfish_) {
+      stockfish_path_ = params.GetOpponentStockfishPath();
+      stockfish_ = classic::UciEngine::Acquire(stockfish_path_);
+      if (!stockfish_) {
+        throw Exception("OpponentDeepTactics: could not start Stockfish at '" +
+                        stockfish_path_ + "'; set OpponentStockfishPath");
+      }
+    }
+    std::vector<std::string> moves;
+    moves.reserve(legal_moves.size());
+    for (Move move : legal_moves) {
+      if (black_to_move) move.Flip();
+      moves.push_back(move.ToString(false));
+    }
+    constexpr int kMaxMs = 2000;  // As in the search.
+    const auto scores = stockfish_->Score(
+        fen, moves, params.GetOpponentDeepTacticsDepth(), kMaxMs);
+    if (!scores) throw Exception("OpponentDeepTactics: Stockfish stopped working");
+    classic::ShiftForCloserLook(policy, *scores, params.GetOpponentDeepTactics());
+  }
+
+  // The move, drawn in proportion to the probabilities, which are also the
+  // training data's policy target.
+  float total = 0.0f;
+  for (float p : policy) total += p;
+  for (float& p : policy) p /= total;
+  const float r = Random::Get().GetFloat(1.0f);
+  size_t played = 0;
+  for (float sum = policy[0]; sum <= r && played + 1 < policy.size();) {
+    sum += policy[++played];
+  }
+
+  if (training) {
+    training_data_.AddOpponentMove(history, legal_moves, policy, played,
+                                   *main_eval);
+  }
+  tree_[0]->MakeMove(legal_moves[played]);
+  if (tree_[0] != tree_[1]) tree_[1]->MakeMove(legal_moves[played]);
+}
+
 void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
                         SyzygyTablebase* syzygy_tb, bool enable_resign) {
   bool blacks_move = tree_[0]->IsBlackToMove();
@@ -153,8 +242,14 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
       adjudicated_ = true;
       break;
     }
-    // Initialize search.
     const int idx = blacks_move ? 1 : 0;
+    // Opponent modeling: an opponent player moves without searching.
+    if (options_[idx].opponent_backend) {
+      PlayOpponentMove(idx, training);
+      blacks_move = !blacks_move;
+      continue;
+    }
+    // Initialize search.
     if (!options_[idx].uci_options->Get<bool>(kReuseTreeId)) {
       tree_[idx]->TrimTreeAtHead();
     }

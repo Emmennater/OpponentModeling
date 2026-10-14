@@ -32,6 +32,7 @@
 #include "chess/pgn.h"
 #include "neural/memcache.h"
 #include "neural/shared_params.h"
+#include "search/classic/opponent_model.h"
 #include "search/classic/search.h"
 #include "search/classic/stoppers/factory.h"
 #include "selfplay/game.h"
@@ -97,6 +98,14 @@ const OptionId kSyzygyTablebaseId{
     "List of Syzygy tablebase directories, list entries separated by system "
     "separator (\";\" for Windows, \":\" for Linux).",
     's'};
+const OptionId kOpponentPlayerId{
+    "opponent-player", "OpponentPlayer",
+    "Opponent modeling: the player does not search, but plays moves drawn "
+    "from the opponent model's probabilities (OpponentModelWeights), after "
+    "the shifts the search assumes at its opponent nodes (OpponentEngineMix, "
+    "OpponentTactics, OpponentMinProbability, OpponentDeepTactics). The other "
+    "player's network evaluates its positions for the training data, where "
+    "its moves have 0 visits."};
 
 }  // namespace
 
@@ -136,6 +145,8 @@ void SelfPlayTournament::PopulateOptions(OptionsParser* options) {
   options->Add<ChoiceOption>(kOpeningsModeId, openings_modes) = "sequential";
 
   options->Add<StringOption>(kSyzygyTablebaseId);
+  options->Add<BoolOption>(kOpponentPlayerId) = false;
+  classic::PopulateOpponentModelOptions(options);
   SelfPlayGame::PopulateUciParams(options);
 
   auto defaults = options->GetMutableDefaultsOptions();
@@ -213,9 +224,29 @@ SelfPlayTournament::SelfPlayTournament(const OptionsDict& options,
   static constexpr const char* kPlayerNames[2] = {"player1", "player2"};
   static constexpr const char* kPlayerColors[2] = {"white", "black"};
 
+  // Opponent modeling: an opponent player's model, instead of a network to
+  // search with.
+  for (int name_idx : {0, 1}) {
+    const auto& opts = options.GetSubdict(kPlayerNames[name_idx]);
+    if (!opts.Get<bool>(kOpponentPlayerId)) continue;
+    opponent_backends_[name_idx] = classic::CreateOpponentModelBackend(
+        opts, &opponent_backend_options_[name_idx]);
+    if (!opponent_backends_[name_idx]) {
+      throw Exception("An opponent player needs OpponentModelWeights.");
+    }
+  }
+  if (opponent_backends_[0] && opponent_backends_[1]) {
+    throw Exception("Only one player can be an opponent player.");
+  }
+  if ((opponent_backends_[0] || opponent_backends_[1]) &&
+      multi_games_size_ > 0) {
+    throw Exception("Policy/Value games have no opponent players.");
+  }
+
   // Initializing networks.
   std::vector<std::shared_ptr<Backend>> backend_list;
   for (int name_idx : {0, 1}) {
+    if (opponent_backends_[name_idx]) continue;
     for (int color_idx : {0, 1}) {
       const auto& name = kPlayerNames[name_idx];
       const auto& color = kPlayerColors[color_idx];
@@ -245,6 +276,7 @@ SelfPlayTournament::SelfPlayTournament(const OptionsDict& options,
       limits.visits = dict.Get<int>(kVisitsId);
       limits.movetime = dict.Get<int>(kTimeMsId);
 
+      if (opponent_backends_[name_idx]) continue;  // Does not search.
       if (multi_games_size_ == 0 && limits.playouts == -1 &&
           limits.visits == -1 && limits.movetime == -1) {
         throw Exception(
@@ -314,6 +346,7 @@ void SelfPlayTournament::PlayOneGame(int game_number) {
     opt.backend = backends_[pl_idx][color].get();
     opt.uci_options = &player_options_[pl_idx][color];
     opt.search_limits = search_limits_[pl_idx][color];
+    opt.opponent_backend = opponent_backends_[pl_idx].get();
 
     // "bestmove" callback.
     opt.best_move_callback = [this, game_number, pl_idx, player1_black,
