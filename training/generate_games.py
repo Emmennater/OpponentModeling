@@ -10,9 +10,11 @@ drops the rare game that reaches its 450-ply limit. Each position's
 plies_left in the training data is then the number of half-moves to the
 mate.
 
-The opponent (player 2) is Maia-3 with the playing settings' opponent model
-(rating 1500 against 1500, the closer look at depth 4 and strength 0.5, no
-other shifts), each move drawn from its probabilities (see OpponentPlayer in
+The opponent (player 2) is Maia-3 with the playing settings' opponent model:
+rating 1500 against 1500, the closer look at depth 4 and strength 2 (an
+upper bound on what a 1500 player sees: tools/calibrate_closer_look.py
+finds Maia-3 alone about as error-prone as such players), and no other
+shifts. Each move is drawn from its probabilities (see OpponentPlayer in
 lc0-src/src/selfplay/tournament.cc). Games start from the initial position;
 the engine's temperature over its first moves varies its openings, as in
 Lc0's runs.
@@ -81,7 +83,7 @@ OPPONENT = {
     "opponent-model-rating": 1500, "opponent-model-own-rating": 1500,
     "opponent-model-temperature": 1.0, "opponent-engine-mix": 0,
     "opponent-tactics": 0, "opponent-min-probability": 0,
-    "opponent-deep-tactics": 0.5, "opponent-deep-tactics-depth": 4,
+    "opponent-deep-tactics": 2.0, "opponent-deep-tactics-depth": 4,
     "opponent-stockfish-path": STOCKFISH,
 }
 
