@@ -15,7 +15,10 @@
 # value_discount ** plies_left, the rest going to the draw, so a quicker
 # mate is worth more: 0.82 at 40 half-moves, 0.64 at 90.
 #
-# The training section is still a placeholder until the first test run.
+# Training masks illegal moves and freezes batch norm (lczero-training.patch):
+# updating its statistics from these games alone, at learning rate 0,
+# dropped 791556's policy accuracy on them from 75% to 66%. The steps and
+# learning rate are train_net.sh's arguments; the rest is a placeholder.
 # For reference, the network's own record ends at 3,116,000 steps with
 # learning rate 0.0004.
 name: 'om-791556'                      # no dots: the exporter appends .pb.gz only to names without one
@@ -31,6 +34,8 @@ dataset:
 
 training:
   precision: 'single'
+  mask_legal_moves: true               # 791556 was trained so: its illegal moves' logits mean nothing
+  freeze_batch_norm: true              # updating the statistics from these games alone damages the network
   batch_size: 1024
   num_batch_splits: 1
   test_steps: 2000

@@ -83,6 +83,30 @@ index 9f6066e..cb8cd9b 100644
              if self.sample > 1:
                  # Downsample, using only 1/Nth of the items.
                  if random.randint(0, self.sample - 1) != 0:
+diff --git a/tf/tfprocess.py b/tf/tfprocess.py
+index 17d198f..cf9b74f 100644
+--- a/tf/tfprocess.py
++++ b/tf/tfprocess.py
+@@ -1184,13 +1184,18 @@ class TFProcess:
+                 renorm_momentum=self.renorm_momentum,
+                 name=name)(input)
+         else:
++            # Opponent modeling: with freeze_batch_norm, batch norm always
++            # uses the stored statistics, as Lc0 does, and does not update
++            # them, for fine-tuning on data unlike the network's own; its
++            # offsets still train.
++            freeze = self.cfg['training'].get('freeze_batch_norm', False)
+             return tf.keras.layers.BatchNormalization(
+                 epsilon=1e-5,
+                 axis=1,
+                 center=True,
+                 scale=scale,
+                 virtual_batch_size=self.virtual_batch_size,
+-                name=name)(input)
++                name=name)(input, training=False if freeze else None)
+ 
+     def squeeze_excitation(self, inputs, channels, name):
+         assert channels % self.SE_ratio == 0
 diff --git a/tf/train.py b/tf/train.py
 index 2935c31..ad55062 100644
 --- a/tf/train.py
