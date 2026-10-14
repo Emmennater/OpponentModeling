@@ -10,10 +10,12 @@
 #
 # The dataset reads the generations' games (training/generate_games.py),
 # the newest num_chunks of them, one chunk a game: two generations of
-# 15,000. With the options lczero-training.patch adds, only the engine's
-# positions are trained (skip_unsearched), and a decisive result counts
-# value_discount ** plies_left, the rest going to the draw, so a quicker
-# mate is worth more: 0.82 at 40 half-moves, 0.64 at 90.
+# 15,000. With the options lczero-training.patch adds, the opponent's
+# positions train the value and moves left but not the policy
+# (blank_unsearched_policy; skip_unsearched would drop them, which taught the
+# network that the side to move wins, about +0.6 anywhere), and a decisive
+# result counts value_discount ** plies_left, the rest going to the draw, so
+# a quicker mate is worth more: 0.82 at 40 half-moves, 0.64 at 90.
 #
 # Training masks illegal moves and freezes batch norm (lczero-training.patch):
 # updating its statistics from these games alone, at learning rate 0,
@@ -30,7 +32,8 @@ dataset:
   train_ratio: 0.90
   input: '/mnt/c/Users/emmet/Documents/GitHub/OpponentModeling/training/data/gen*/data-*/'
   value_discount: 0.995
-  skip_unsearched: true
+  skip_unsearched: false
+  blank_unsearched_policy: true
 
 training:
   precision: 'single'

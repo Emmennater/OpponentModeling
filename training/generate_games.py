@@ -31,12 +31,15 @@ by two. A rerun continues until the generation has --games games; an
 interrupted run loses only the games in progress, whose partly written files
 are removed on the next start.
 
---report compares the generations: the engine's results, how often it mates
-and how quickly. --pgn writes a generation's games as PGN.
+--eval plays --net's games in training/data/eval/<network>/ instead, apart
+from the generations and their training data, to measure a network.
+--report compares the generations and evaluations: the engine's results,
+how often it mates and how quickly. --pgn writes their games as PGN.
 
 Usage (from Windows, with the repository's .venv; about 7,000 games an hour
 at the default parallelism of 16, the fastest of 8 to 128 on an RTX 4080):
     .venv\\Scripts\\python training\\generate_games.py --generation 1
+    .venv\\Scripts\\python training\\generate_games.py --eval --net training\\nets\\net01.pb.gz
     .venv\\Scripts\\python training\\generate_games.py --report
     .venv\\Scripts\\python training\\generate_games.py --generation 1 --pgn gen01.pgn
 """
@@ -60,6 +63,7 @@ DATA = ROOT / "training" / "data"
 NETS = ROOT / "training" / "nets"
 COLUMNS = ["engine_color", "result", "ending", "plies", "file", "moves"]
 GAMES = 15000  # per generation
+EVAL_GAMES = 500  # for --eval: the median half-moves to mate within about 2
 
 VISITS = 800
 # Lc0's training run 1 (test80), without its opening book and with
@@ -147,19 +151,28 @@ def parse_game(line):
             "plies": str(len(moves)), "file": field["trainingfile"], "moves": " ".join(moves)}
 
 
-def generate(generation, net, target, parallelism):
-    folder = generation_dir(generation)
-    net = Path(net or default_net(generation)).resolve()
+def net_name(net):
+    return Path(net).name.removesuffix(".pb.gz")
+
+
+def label(folder):
+    if folder.parent.name == "eval":
+        return f"Evaluation of {folder.name}"
+    return f"Generation {int(folder.name[3:])}"
+
+
+def generate(folder, net, target, parallelism):
+    net = Path(net).resolve()
     if not net.exists():
         sys.exit(f"{net} does not exist: train it first, or give --net")
     folder.mkdir(parents=True, exist_ok=True)
     record = folder / "net.txt"
     if record.exists() and Path(record.read_text().strip()) != net:
-        sys.exit(f"Generation {generation} was played by {record.read_text().strip()}, not {net}")
+        sys.exit(f"{label(folder)} was played by {record.read_text().strip()}, not {net}")
     record.write_text(f"{net}\n")
     games = read_index(folder)
     remove_orphans(folder, games)
-    print(f"Generation {generation}, played by {net.name}")
+    print(f"{label(folder)}, played by {net.name}")
     if len(games) >= target:
         print(f"{len(games)} games already generated")
         return
@@ -207,7 +220,7 @@ def quartiles(values):
 
 
 def report():
-    folders = sorted(DATA.glob("gen[0-9][0-9]"))
+    folders = sorted(DATA.glob("gen[0-9][0-9]")) + sorted(DATA.glob("eval/*"))
     if not folders:
         print("No games yet")
     for folder in folders:
@@ -215,7 +228,7 @@ def report():
         if not games:
             continue
         net = Path((folder / "net.txt").read_text().strip()).name
-        print(f"Generation {int(folder.name[3:])}, played by {net}: {len(games)} games")
+        print(f"{label(folder)}, played by {net}: {len(games)} games")
         for color in ("white", "black", None):
             subset = [g for g in games if color is None or g["engine_color"] == color]
             if not subset:
@@ -244,13 +257,12 @@ def draw_reason(board):
     return "draw"
 
 
-def write_pgn(generation, path):
+def write_pgn(folder, path):
     """Writes a generation's games as PGN, for looking through them."""
-    folder = generation_dir(generation)
     games = read_index(folder)
     if not games:
-        sys.exit(f"Generation {generation} has no games yet")
-    engine = f"Lc0 {Path((folder / 'net.txt').read_text().strip()).name.removesuffix('.pb.gz')} ({VISITS} visits)"
+        sys.exit(f"{label(folder)} has no games yet")
+    engine = f"Lc0 {net_name((folder / 'net.txt').read_text().strip())} ({VISITS} visits)"
     opponent = (f"Maia-3 {OPPONENT['opponent-model-rating']} (closer look depth "
                 f"{OPPONENT['opponent-deep-tactics-depth']}, strength {OPPONENT['opponent-deep-tactics']})")
     with open(path, "w") as out:
@@ -261,7 +273,7 @@ def write_pgn(generation, path):
             pgn = chess.pgn.Game.from_board(board)
             engine_white = g["engine_color"] == "white"
             pgn.headers.update({
-                "Event": f"Generation {generation}", "Site": "Lc0 self-play", "Round": str(i),
+                "Event": label(folder), "Site": "Lc0 self-play", "Round": str(i),
                 "White": engine if engine_white else opponent,
                 "Black": opponent if engine_white else engine,
                 "Termination": "checkmate" if g["ending"] == "mate" else draw_reason(board),
@@ -275,17 +287,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--generation", type=int, default=1, help="generation to play")
     parser.add_argument("--net", help="network to play it with (default: see above)")
-    parser.add_argument("--games", type=int, default=GAMES, help="games wanted in the generation")
+    parser.add_argument("--games", type=int, help=f"games wanted (default {GAMES} for a generation, {EVAL_GAMES} for --eval)")
     parser.add_argument("--parallelism", type=int, default=16, help="games played at once")
+    parser.add_argument("--eval", action="store_true",
+                        help="play --net's games apart from the generations, to evaluate it")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
     parser.add_argument("--pgn", help="only write the generation's games to this PGN file")
     args = parser.parse_args()
+    if args.eval:
+        if not args.net:
+            sys.exit("--eval needs --net")
+        folder = DATA / "eval" / net_name(args.net)
+    else:
+        folder = generation_dir(args.generation)
     if args.report:
         report()
     elif args.pgn:
-        write_pgn(args.generation, args.pgn)
+        write_pgn(folder, args.pgn)
     else:
-        generate(args.generation, args.net, args.games, args.parallelism)
+        games = args.games or (EVAL_GAMES if args.eval else GAMES)
+        generate(folder, args.net or default_net(args.generation), games, args.parallelism)
 
 
 if __name__ == "__main__":
