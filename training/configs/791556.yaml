@@ -8,16 +8,26 @@
 # encoder layers of its own (pol_encoder_layers must be set: for residual
 # networks the code defaults to 1), and WDL and moves-left heads.
 #
-# The dataset and training sections are placeholders for the round trip
-# (roundtrip.sh) until the fine-tune itself is planned. For reference, the
-# network's own record ends at 3,116,000 steps with learning rate 0.0004.
+# The dataset reads the generations' games (training/generate_games.py),
+# the newest num_chunks of them, one chunk a game: two generations of
+# 15,000. With the options lczero-training.patch adds, only the engine's
+# positions are trained (skip_unsearched), and a decisive result counts
+# value_discount ** plies_left, the rest going to the draw, so a quicker
+# mate is worth more: 0.82 at 40 half-moves, 0.64 at 90.
+#
+# The training section is still a placeholder until the first test run.
+# For reference, the network's own record ends at 3,116,000 steps with
+# learning rate 0.0004.
 name: 'om-791556'                      # no dots: the exporter appends .pb.gz only to names without one
 gpu: 0
 
 dataset:
-  num_chunks: 100000
+  num_chunks: 30000
+  allow_less_chunks: true
   train_ratio: 0.90
   input: '/mnt/c/Users/emmet/Documents/GitHub/OpponentModeling/training/data/gen*/data-*/'
+  value_discount: 0.995
+  skip_unsearched: true
 
 training:
   precision: 'single'

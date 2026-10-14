@@ -3,7 +3,8 @@
 # code in tf/, the only one that trains residual networks like 791556) in WSL.
 #
 # - lczero-training is cloned into training/lczero-training (ignored by git),
-#   at the commit below, with its libs/lc0 submodule for net.proto.
+#   at the commit below, with its libs/lc0 submodule for net.proto, and
+#   lczero-training.patch applied.
 # - The Python environment goes to ~/.venvs/lc0-training, on WSL's own disk:
 #   TensorFlow is thousands of files, slow to import from /mnt/c.
 # - TensorFlow 2.15 is the last version with Keras 2, which tf/ is written
@@ -37,6 +38,14 @@ echo "== lczero-training at $COMMIT"
 git -C "$REPO" fetch --quiet origin "$COMMIT" 2> /dev/null || true
 git -C "$REPO" checkout --quiet "$COMMIT"
 git -C "$REPO" submodule update --init --depth 1 libs/lc0
+# Opponent modeling: the data loader's value_discount and skip_unsearched
+# options (see lczero-training.patch)
+if git -C "$REPO" apply --reverse --check "$HERE/lczero-training.patch" 2> /dev/null; then
+  echo "== lczero-training.patch already applied"
+else
+  echo "== Applying lczero-training.patch"
+  git -C "$REPO" apply "$HERE/lczero-training.patch"
+fi
 
 if [ ! -x "$VENV/bin/python" ]; then
   echo "== Creating $VENV (Python 3.11)"

@@ -1,0 +1,131 @@
+diff --git a/tf/chunkparser.py b/tf/chunkparser.py
+index 9f6066e..cb8cd9b 100644
+--- a/tf/chunkparser.py
++++ b/tf/chunkparser.py
+@@ -131,12 +131,15 @@ class ChunkParser:
+                  diff_focus_slope=0,
+                  diff_focus_q_weight=6.0,
+                  diff_focus_pol_scale=3.5,
+-                 workers=None):
++                 workers=None,
++                 value_discount=1.0,
++                 skip_unsearched=False):
+         self.inner = ChunkParserInner(self, chunks, expected_input_format,
+                                       shuffle_size, sample, buffer_size,
+                                       batch_size, diff_focus_min,
+                                       diff_focus_slope, diff_focus_q_weight,
+-                                      diff_focus_pol_scale, workers)
++                                      diff_focus_pol_scale, workers,
++                                      value_discount, skip_unsearched)
+ 
+     def shutdown(self):
+         """
+@@ -161,7 +164,7 @@ class ChunkParserInner:
+     def __init__(self, parent, chunks, expected_input_format, shuffle_size,
+                  sample, buffer_size, batch_size, diff_focus_min,
+                  diff_focus_slope, diff_focus_q_weight, diff_focus_pol_scale,
+-                 workers):
++                 workers, value_discount=1.0, skip_unsearched=False):
+         """
+         Read data and yield batches of raw tensors.
+ 
+@@ -171,6 +174,11 @@ class ChunkParserInner:
+         'sample' is the rate to down-sample.
+         'diff_focus_min', 'diff_focus_slope', 'diff_focus_q_weight' and 'diff_focus_pol_scale' control diff focus
+         'workers' is the number of child workers to use.
++        'value_discount' (opponent modeling) discounts a decisive result by
++        value_discount ** plies_left: the win or loss keeps that share, the
++        rest goes to the draw, so a quicker win is worth more.
++        'skip_unsearched' (opponent modeling) skips records with 0 visits:
++        the moves of an opponent player in self-play, which did not search.
+ 
+         The data is represented in a number of formats through this dataflow
+         pipeline. In order, they are:
+@@ -196,6 +204,8 @@ class ChunkParserInner:
+ 
+         # set the down-sampling rate
+         self.sample = sample
++        self.value_discount = value_discount
++        self.skip_unsearched = skip_unsearched
+         # set the details for diff focus, defaults accept all positions
+         self.diff_focus_min = diff_focus_min
+         self.diff_focus_slope = diff_focus_slope
+@@ -330,6 +340,7 @@ class ChunkParserInner:
+         # so copy that over if the new ply_count is not populated.
+         if plies_left == 0:
+             plies_left = invariance_info
++        plies_left_value = plies_left
+         plies_left = struct.pack('f', plies_left)
+ 
+         assert input_format == self.expected_input_format
+@@ -387,8 +398,12 @@ class ChunkParserInner:
+         assert len(planes) == ((8 * 13 * 1 + 8 * 1 * 1) * 8 * 8 * 4)
+ 
+         if ver == V6_VERSION:
+-            winner = struct.pack('fff', 0.5 * (1.0 - result_d + result_q),
+-                                 result_d, 0.5 * (1.0 - result_d - result_q))
++            win = 0.5 * (1.0 - result_d + result_q)
++            loss = 0.5 * (1.0 - result_d - result_q)
++            if self.value_discount < 1.0:
++                kept = self.value_discount ** max(0.0, plies_left_value)
++                win, loss = win * kept, loss * kept
++            winner = struct.pack('fff', win, 1.0 - win - loss, loss)
+         else:
+             dep_result = float(dep_result)
+             assert dep_result == 1.0 or dep_result == -1.0 or dep_result == 0.0
+@@ -421,6 +436,9 @@ class ChunkParserInner:
+             return
+ 
+         for i in range(0, len(chunkdata), record_size):
++            if self.skip_unsearched and version == V6_VERSION and struct.unpack(
++                    'I', chunkdata[i + 8340:i + 8344])[0] == 0:
++                continue  # An opponent player's move: not searched.
+             if self.sample > 1:
+                 # Downsample, using only 1/Nth of the items.
+                 if random.randint(0, self.sample - 1) != 0:
+diff --git a/tf/train.py b/tf/train.py
+index 2935c31..ad55062 100644
+--- a/tf/train.py
++++ b/tf/train.py
+@@ -151,6 +151,9 @@ def main(cmd):
+     diff_focus_slope = cfg['training'].get('diff_focus_slope', 0)
+     diff_focus_q_weight = cfg['training'].get('diff_focus_q_weight', 6.0)
+     diff_focus_pol_scale = cfg['training'].get('diff_focus_pol_scale', 3.5)
++    # Opponent modeling (see ChunkParserInner)
++    value_discount = cfg['dataset'].get('value_discount', 1.0)
++    skip_unsearched = cfg['dataset'].get('skip_unsearched', False)
+ 
+     root_dir = os.path.join(cfg['training']['path'], cfg['name'])
+     if not os.path.exists(root_dir):
+@@ -165,7 +168,9 @@ def main(cmd):
+                                diff_focus_slope=diff_focus_slope,
+                                diff_focus_q_weight=diff_focus_q_weight,
+                                diff_focus_pol_scale=diff_focus_pol_scale,
+-                               workers=train_workers)
++                               workers=train_workers,
++                               value_discount=value_discount,
++                               skip_unsearched=skip_unsearched)
+     test_shuffle_size = int(shuffle_size * (1.0 - train_ratio))
+     # no diff focus for test_parser
+     test_parser = ChunkParser(test_chunks,
+@@ -173,14 +178,18 @@ def main(cmd):
+                               shuffle_size=test_shuffle_size,
+                               sample=SKIP,
+                               batch_size=split_batch_size,
+-                              workers=test_workers)
++                              workers=test_workers,
++                              value_discount=value_discount,
++                              skip_unsearched=skip_unsearched)
+     if 'input_validation' in cfg['dataset']:
+         valid_chunks = get_all_chunks(cfg['dataset']['input_validation'])
+         validation_parser = ChunkParser(valid_chunks,
+                                         get_input_mode(cfg),
+                                         sample=1,
+                                         batch_size=split_batch_size,
+-                                        workers=0)
++                                        workers=0,
++                                        value_discount=value_discount,
++                                        skip_unsearched=skip_unsearched)
+ 
+     import tensorflow as tf
+     from chunkparsefunc import parse_function
