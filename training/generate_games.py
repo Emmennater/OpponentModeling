@@ -17,25 +17,28 @@ lc0-src/src/selfplay/tournament.cc). Games start from the initial position;
 the engine's temperature over its first moves varies its openings, as in
 Lc0's runs.
 
-Lc0 writes each game's training data (V6 chunks, which configs/791556.yaml
-reads) to training/data/data-<id>/. This script appends a line per game to
-training/data/games.tsv: the engine's color, its result, how the game ended
-(mate or draw), the number of half-moves, the training file and the moves. A
-rerun continues until there are --games games; an interrupted run loses only
-the games in progress, whose partly written files are removed on the next
-start.
+Games come in generations, as in Lc0's runs: generation N is played by the
+network trained on the generations before it, training/nets/net<N-1>.pb.gz
+(generation 1 by 791556), or by --net. Lc0 writes each game's training data
+(V6 chunks, which configs/791556.yaml reads) to
+training/data/gen<N>/data-<id>/. This script appends a line per game to
+gen<N>/games.tsv: the engine's color, its result, how the game ended (mate or
+draw), the number of half-moves, the training file and the moves, and
+records the network in gen<N>/net.txt, so that a generation is never played
+by two. A rerun continues until the generation has --games games; an
+interrupted run loses only the games in progress, whose partly written files
+are removed on the next start.
 
---report summarizes games.tsv: the engine's results, how often it mates and
-how quickly.
+--report compares the generations: the engine's results, how often it mates
+and how quickly.
 
 Usage (from Windows, with the repository's .venv; about 7,000 games an hour
 at the default parallelism of 16, the fastest of 8 to 128 on an RTX 4080):
-    .venv\\Scripts\\python training\\generate_games.py --games 100000
+    .venv\\Scripts\\python training\\generate_games.py --generation 1
     .venv\\Scripts\\python training\\generate_games.py --report
 """
 
 import argparse
-import os
 import statistics
 import subprocess
 import sys
@@ -46,12 +49,13 @@ from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
 LC0 = ROOT / "lc0-src" / "build" / "lc0.exe"
-NET = ROOT / "lc0" / "bin" / "791556.pb.gz"
+FIRST_NET = ROOT / "lc0" / "bin" / "791556.pb.gz"
 MAIA = ROOT / "lc0" / "nets" / "maia3-23m-fp16.onnx"
 STOCKFISH = ROOT.parent / "StockfishTrapFinder" / "stockfish" / "stockfish.exe"
 DATA = ROOT / "training" / "data"
-INDEX = DATA / "games.tsv"
+NETS = ROOT / "training" / "nets"
 COLUMNS = ["engine_color", "result", "ending", "plies", "file", "moves"]
+GAMES = 15000  # per generation
 
 VISITS = 800
 # Lc0's training run 1 (test80), without its opening book and with
@@ -80,20 +84,31 @@ OPPONENT = {
 }
 
 
-def read_index():
-    if not INDEX.exists():
+def generation_dir(generation):
+    return DATA / f"gen{generation:02d}"
+
+
+def default_net(generation):
+    """The network that plays a generation: the one trained after the
+    previous generation, or 791556 for the first."""
+    return FIRST_NET if generation == 1 else NETS / f"net{generation - 1:02d}.pb.gz"
+
+
+def read_index(folder):
+    index = folder / "games.tsv"
+    if not index.exists():
         return []
-    lines = INDEX.read_text().splitlines()[1:]
+    lines = index.read_text().splitlines()[1:]
     return [dict(zip(COLUMNS, line.split("\t"))) for line in lines if line]
 
 
-def remove_orphans(games):
+def remove_orphans(folder, games):
     """Removes training files of games that never reached the index: those
     in progress when a run was stopped, possibly written in part."""
     listed = {g["file"] for g in games}
     removed = 0
-    for path in DATA.glob("data-*/*.gz"):
-        if path.relative_to(DATA).as_posix() not in listed:
+    for path in folder.glob("data-*/*.gz"):
+        if path.relative_to(folder).as_posix() not in listed:
             path.unlink()
             removed += 1
     if removed:
@@ -128,28 +143,38 @@ def parse_game(line):
             "plies": str(len(moves)), "file": field["trainingfile"], "moves": " ".join(moves)}
 
 
-def generate(target, parallelism):
-    DATA.mkdir(parents=True, exist_ok=True)
-    games = read_index()
-    remove_orphans(games)
+def generate(generation, net, target, parallelism):
+    folder = generation_dir(generation)
+    net = Path(net or default_net(generation)).resolve()
+    if not net.exists():
+        sys.exit(f"{net} does not exist: train it first, or give --net")
+    folder.mkdir(parents=True, exist_ok=True)
+    record = folder / "net.txt"
+    if record.exists() and Path(record.read_text().strip()) != net:
+        sys.exit(f"Generation {generation} was played by {record.read_text().strip()}, not {net}")
+    record.write_text(f"{net}\n")
+    games = read_index(folder)
+    remove_orphans(folder, games)
+    print(f"Generation {generation}, played by {net.name}")
     if len(games) >= target:
         print(f"{len(games)} games already generated")
         return
-    if not INDEX.exists():
-        INDEX.write_text("\t".join(COLUMNS) + "\n")
+    index_path = folder / "games.tsv"
+    if not index_path.exists():
+        index_path.write_text("\t".join(COLUMNS) + "\n")
     command = [str(LC0), "selfplay", f"--games={target - len(games)}",
                f"--parallelism={parallelism}", "--training=true",
                "--backend=multiplexing", "--backend-opts=backend=cuda-fp16",
-               f"--weights={NET}", f"--player1.visits={VISITS}"]
+               f"--weights={net}", f"--player1.visits={VISITS}"]
     command += [f"--{name}={value}" for name, value in ENGINE.items()]
     command += [f"--player2.{name}={value}" for name, value in OPPONENT.items()]
     # Lc0 writes its training data under the current directory.
-    proc = subprocess.Popen(command, cwd=DATA, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    proc = subprocess.Popen(command, cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             text=True, bufsize=1)
     bar = tqdm(total=target, initial=len(games), desc="Games", unit="game", smoothing=0.05)
     counts = {"mate": 0, "win": 0}
     try:
-        with INDEX.open("a") as index:
+        with index_path.open("a") as index:
             for line in proc.stdout:
                 if not line.startswith("gameready"):
                     continue
@@ -178,37 +203,43 @@ def quartiles(values):
 
 
 def report():
-    games = read_index()
-    if not games:
+    folders = sorted(DATA.glob("gen[0-9][0-9]"))
+    if not folders:
         print("No games yet")
-        return
-    n = len(games)
-    print(f"{n} games")
-    for color in ("white", "black", None):
-        subset = [g for g in games if color is None or g["engine_color"] == color]
-        if not subset:
+    for folder in folders:
+        games = read_index(folder)
+        if not games:
             continue
-        results = {r: sum(g["result"] == r for g in subset) for r in ("win", "draw", "loss")}
-        mates = [int(g["plies"]) for g in subset if g["result"] == "win" and g["ending"] == "mate"]
-        name = f"Engine as {color}" if color else "All"
-        print(f"{name}: {len(subset)} games, +{results['win']} ={results['draw']} -{results['loss']}; "
-              f"mates {len(mates)} ({100 * len(mates) / len(subset):.0f}%), "
-              f"half-moves to mate {quartiles(mates)}")
-    mates = sorted(int(g["plies"]) for g in games if g["result"] == "win" and g["ending"] == "mate")
-    for limit in (40, 60, 80):
-        print(f"  mate within {limit} half-moves: {sum(p <= limit for p in mates) / n:.0%} of games")
+        net = Path((folder / "net.txt").read_text().strip()).name
+        print(f"Generation {int(folder.name[3:])}, played by {net}: {len(games)} games")
+        for color in ("white", "black", None):
+            subset = [g for g in games if color is None or g["engine_color"] == color]
+            if not subset:
+                continue
+            results = {r: sum(g["result"] == r for g in subset) for r in ("win", "draw", "loss")}
+            mates = [int(g["plies"]) for g in subset if g["result"] == "win" and g["ending"] == "mate"]
+            name = f"Engine as {color}" if color else "All"
+            print(f"  {name}: +{results['win']} ={results['draw']} -{results['loss']}; "
+                  f"mates {100 * len(mates) / len(subset):.0f}%, "
+                  f"half-moves to mate {quartiles(mates)}")
+        mates = [int(g["plies"]) for g in games if g["result"] == "win" and g["ending"] == "mate"]
+        within = ", ".join(f"{limit}: {sum(p <= limit for p in mates) / len(games):.0%}"
+                           for limit in (40, 60, 80))
+        print(f"  Mate within so many half-moves, share of games: {within}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--games", type=int, default=100000, help="total games wanted")
+    parser.add_argument("--generation", type=int, default=1, help="generation to play")
+    parser.add_argument("--net", help="network to play it with (default: see above)")
+    parser.add_argument("--games", type=int, default=GAMES, help="games wanted in the generation")
     parser.add_argument("--parallelism", type=int, default=16, help="games played at once")
-    parser.add_argument("--report", action="store_true", help="only summarize the games so far")
+    parser.add_argument("--report", action="store_true", help="only compare the generations so far")
     args = parser.parse_args()
     if args.report:
         report()
     else:
-        generate(args.games, args.parallelism)
+        generate(args.generation, args.net, args.games, args.parallelism)
 
 
 if __name__ == "__main__":

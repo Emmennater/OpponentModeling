@@ -17,7 +17,7 @@ gpu: 0
 dataset:
   num_chunks: 100000
   train_ratio: 0.90
-  input: '/mnt/c/Users/emmet/Documents/GitHub/OpponentModeling/training/data/*/'
+  input: '/mnt/c/Users/emmet/Documents/GitHub/OpponentModeling/training/data/gen*/data-*/'
 
 training:
   precision: 'single'
