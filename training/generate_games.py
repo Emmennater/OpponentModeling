@@ -107,8 +107,10 @@ def read_index(folder):
     index = folder / "games.tsv"
     if not index.exists():
         return []
-    lines = index.read_text().splitlines()[1:]
-    return [dict(zip(COLUMNS, line.split("\t"))) for line in lines if line]
+    # A line cut short by a closed window is left out, and its game's file
+    # then removed as unfinished (see remove_orphans).
+    rows = [line.split("\t") for line in index.read_text().splitlines()[1:]]
+    return [dict(zip(COLUMNS, row)) for row in rows if len(row) == len(COLUMNS) and row[-1]]
 
 
 def remove_orphans(folder, games):
