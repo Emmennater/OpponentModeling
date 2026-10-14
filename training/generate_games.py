@@ -30,12 +30,13 @@ interrupted run loses only the games in progress, whose partly written files
 are removed on the next start.
 
 --report compares the generations: the engine's results, how often it mates
-and how quickly.
+and how quickly. --pgn writes a generation's games as PGN.
 
 Usage (from Windows, with the repository's .venv; about 7,000 games an hour
 at the default parallelism of 16, the fastest of 8 to 128 on an RTX 4080):
     .venv\\Scripts\\python training\\generate_games.py --generation 1
     .venv\\Scripts\\python training\\generate_games.py --report
+    .venv\\Scripts\\python training\\generate_games.py --generation 1 --pgn gen01.pgn
 """
 
 import argparse
@@ -45,6 +46,7 @@ import sys
 from pathlib import Path
 
 import chess
+import chess.pgn
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -228,6 +230,45 @@ def report():
         print(f"  Mate within so many half-moves, share of games: {within}")
 
 
+def draw_reason(board):
+    if board.is_stalemate():
+        return "stalemate"
+    if board.is_insufficient_material():
+        return "insufficient material"
+    if board.can_claim_threefold_repetition():
+        return "threefold repetition"
+    if board.can_claim_fifty_moves():
+        return "fifty-move rule"
+    return "draw"
+
+
+def write_pgn(generation, path):
+    """Writes a generation's games as PGN, for looking through them."""
+    folder = generation_dir(generation)
+    games = read_index(folder)
+    if not games:
+        sys.exit(f"Generation {generation} has no games yet")
+    engine = f"Lc0 {Path((folder / 'net.txt').read_text().strip()).name.removesuffix('.pb.gz')} ({VISITS} visits)"
+    opponent = (f"Maia-3 {OPPONENT['opponent-model-rating']} (closer look depth "
+                f"{OPPONENT['opponent-deep-tactics-depth']}, strength {OPPONENT['opponent-deep-tactics']})")
+    with open(path, "w") as out:
+        for i, g in enumerate(games, 1):
+            board = chess.Board()
+            for uci in g["moves"].split():
+                board.push(lc0_move(board, uci))
+            pgn = chess.pgn.Game.from_board(board)
+            engine_white = g["engine_color"] == "white"
+            pgn.headers.update({
+                "Event": f"Generation {generation}", "Site": "Lc0 self-play", "Round": str(i),
+                "White": engine if engine_white else opponent,
+                "Black": opponent if engine_white else engine,
+                "Termination": "checkmate" if g["ending"] == "mate" else draw_reason(board),
+                "PlyCount": g["plies"]})
+            pgn.headers.pop("Date", None)
+            out.write(str(pgn) + "\n\n")
+    print(f"Wrote {len(games)} games to {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--generation", type=int, default=1, help="generation to play")
@@ -235,9 +276,12 @@ def main():
     parser.add_argument("--games", type=int, default=GAMES, help="games wanted in the generation")
     parser.add_argument("--parallelism", type=int, default=16, help="games played at once")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
+    parser.add_argument("--pgn", help="only write the generation's games to this PGN file")
     args = parser.parse_args()
     if args.report:
         report()
+    elif args.pgn:
+        write_pgn(args.generation, args.pgn)
     else:
         generate(args.generation, args.net, args.games, args.parallelism)
 
