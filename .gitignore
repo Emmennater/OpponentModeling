@@ -8,3 +8,6 @@ lc0-src/build/
 __pycache__/
 tree.pgn
 tree.pgn.stats.txt
+training/lczero-training/
+training/runs/
+training/data/
