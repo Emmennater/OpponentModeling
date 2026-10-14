@@ -36,8 +36,9 @@ from the generations and their training data, to measure a network.
 --report compares the generations and evaluations: the engine's results,
 how often it mates and how quickly. --pgn writes their games as PGN.
 
-Usage (from Windows, with the repository's .venv; about 7,000 games an hour
-at the default parallelism of 16, the fastest of 8 to 128 on an RTX 4080):
+Usage (from Windows, with the repository's .venv; 2,000 to 3,500 games an
+hour on an RTX 4080 at the default parallelism of 16, the fastest of 8 to
+128, depending on the network: one whose values are off searches slower):
     .venv\\Scripts\\python training\\generate_games.py --generation 1
     .venv\\Scripts\\python training\\generate_games.py --eval --net training\\nets\\net01.pb.gz
     .venv\\Scripts\\python training\\generate_games.py --report
@@ -62,7 +63,7 @@ STOCKFISH = ROOT.parent / "StockfishTrapFinder" / "stockfish" / "stockfish.exe"
 DATA = ROOT / "training" / "data"
 NETS = ROOT / "training" / "nets"
 COLUMNS = ["engine_color", "result", "ending", "plies", "file", "moves"]
-GAMES = 15000  # per generation
+GAMES = 5000  # per generation
 EVAL_GAMES = 500  # for --eval: the median half-moves to mate within about 2
 
 VISITS = 800

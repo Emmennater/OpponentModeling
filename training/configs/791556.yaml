@@ -9,8 +9,8 @@
 # networks the code defaults to 1), and WDL and moves-left heads.
 #
 # The dataset reads the generations' games (training/generate_games.py),
-# the newest num_chunks of them, one chunk a game: two generations of
-# 15,000. With the options lczero-training.patch adds, the opponent's
+# the newest num_chunks of them, one chunk a game: three generations of
+# 5,000. With the options lczero-training.patch adds, the opponent's
 # positions train the value and moves left but not the policy
 # (blank_unsearched_policy; skip_unsearched would drop them, which taught the
 # network that the side to move wins, about +0.6 anywhere), and a decisive
@@ -27,7 +27,7 @@ name: 'om-791556'                      # no dots: the exporter appends .pb.gz on
 gpu: 0
 
 dataset:
-  num_chunks: 30000
+  num_chunks: 15000
   allow_less_chunks: true
   train_ratio: 0.90
   input: '/mnt/c/Users/emmet/Documents/GitHub/OpponentModeling/training/data/gen*/data-*/'

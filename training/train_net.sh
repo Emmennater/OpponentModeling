@@ -55,7 +55,24 @@ if [ ! -f "$RUN/checkpoint" ]; then
     tail -30 "$RUN/net_to_model.log"; exit 1; }
 fi
 echo "== Training $NAME: $STEPS steps at learning rate $LR"
-"$PYTHON" train.py --cfg "$RUN/config.yaml" --output "$RUN/$NAME" 2>&1 | tee -a "$RUN/train.log" |
-  grep --line-buffered -E "^step|^Using|Restoring|Model saved"
+touch "$RUN/train.log"
+"$PYTHON" train.py --cfg "$RUN/config.yaml" --output "$RUN/$NAME" >> "$RUN/train.log" 2>&1 &
+TRAIN=$!
+tail -n 0 -f --pid=$TRAIN "$RUN/train.log" | grep --line-buffered -E "^step|^Using|Restoring|Model saved" &
+# lczero-training can hang shutting down its data readers after writing the
+# network: once it is written, train.py gets a minute to finish, then stops.
+while kill -0 $TRAIN 2> /dev/null; do
+  if grep -q "Weights saved as '$RUN/$NAME.pb.gz'" "$RUN/train.log"; then
+    for _ in $(seq 60); do kill -0 $TRAIN 2> /dev/null || break; sleep 1; done
+    kill $TRAIN 2> /dev/null || true
+    break
+  fi
+  sleep 5
+done
+wait $TRAIN || true
+if [ ! -f "$RUN/$NAME.pb.gz" ]; then
+  echo "Training failed: see $RUN/train.log"
+  exit 1
+fi
 cp "$RUN/$NAME.pb.gz" "$HERE/nets/$NAME.pb.gz"
 echo "== Wrote training/nets/$NAME.pb.gz"
