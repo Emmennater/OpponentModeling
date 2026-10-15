@@ -604,6 +604,13 @@ const OptionId SearchParams::kOpponentStockfishFloorId{
     "can only add mistakes, so the value is at least Stockfish's evaluation. "
     "Attacks the main network misjudges then count as soon as Stockfish has "
     "seen them, without the search having to work them out."};
+const OptionId SearchParams::kIdentityPlaneId{
+    "identity-plane", "IdentityPlane",
+    "For networks trained against a modeled opponent with the identity "
+    "plane (training/configs/791556.yaml): input plane 110 tells the network "
+    "where this engine is to move, the side to move at the root, rather than "
+    "its opponent, so that it can judge the two differently. Leave off for "
+    "other networks, which never saw anything but zeros there."};
 const OptionId SearchParams::kOpponentWinValueId{
     "opponent-win-value", "OpponentWinValue",
     "With an opponent model, the main network's value (W - L, from -1 to 1) "
@@ -801,6 +808,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<FloatOption>(kOpponentCautionAheadId, 0.0f, 2.0f) = 0.0f;
   options->Add<IntOption>(kOpponentHorizonId, 0, 1000) = 16;
   options->Add<BoolOption>(kOpponentStockfishFloorId) = false;
+  options->Add<BoolOption>(kIdentityPlaneId) = false;
   options->Add<FloatOption>(kOpponentWinValueId, 0.05f, 1.0f) = 1.0f;
   options->Add<FloatOption>(kOpponentDeepTacticsId, 0.0f, 10.0f) = 2.0f;
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 500;
@@ -919,6 +927,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentCautionAhead(options.Get<float>(kOpponentCautionAheadId)),
       kOpponentHorizon(options.Get<int>(kOpponentHorizonId)),
       kOpponentStockfishFloor(options.Get<bool>(kOpponentStockfishFloorId)),
+      kIdentityPlane(options.Get<bool>(kIdentityPlaneId)),
       kOpponentWinValue(options.Get<float>(kOpponentWinValueId)),
       kOpponentDeepTactics(options.Get<float>(kOpponentDeepTacticsId)),
       kOpponentDeepTacticsVisits(options.Get<int>(kOpponentDeepTacticsVisitsId)),

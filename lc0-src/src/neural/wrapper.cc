@@ -33,6 +33,7 @@
 #include "neural/encoder.h"
 #include "neural/shared_params.h"
 #include "utils/atomic_vector.h"
+#include "utils/exception.h"
 #include "utils/fastmath.h"
 
 namespace lczero {
@@ -115,6 +116,14 @@ class NetworkAsBackendComputation : public BackendComputation {
         .result = result,
         .transform = 0});
     entries_[idx].transform = transform;
+    // Opponent modeling: the identity plane (see EvalPosition). Armageddon
+    // formats use this plane for their side to move.
+    if (pos.engine_to_move) {
+      if (IsCanonicalArmageddonFormat(backend_->input_format_)) {
+        throw Exception("IdentityPlane needs a network without armageddon input.");
+      }
+      entries_[idx].input[kAuxPlaneBase + 6].SetAll();
+    }
     return ENQUEUED_FOR_EVAL;
   }
 

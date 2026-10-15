@@ -148,6 +148,14 @@ class Search {
 
   PositionHistory GetPositionHistoryAtNode(const Node* node) const;
 
+  // Opponent modeling: whether the position at the end of `history` is one
+  // where this engine is to move, the side to move at the root, as the
+  // network's input marks it with IdentityPlane; false without it.
+  bool EngineToMove(const PositionHistory& history) const {
+    return params_.GetIdentityPlane() &&
+           history.IsBlackToMove() == played_history_.IsBlackToMove();
+  }
+
   // Opponent modeling: the closer look at positions the search relies on
   // (see OpponentDeepTactics). A worker queues a position where the opponent
   // is to move once it has enough visits; threads, each with a Stockfish

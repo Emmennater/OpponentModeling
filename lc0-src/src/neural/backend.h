@@ -70,6 +70,11 @@ struct EvalResult {
 struct EvalPosition {
   std::span<const Position> pos;
   std::span<const Move> legal_moves;
+  // Opponent modeling: the engine, not its opponent, is to move (see
+  // IdentityPlane). For networks trained so, it sets input plane 110, which
+  // is otherwise always zero in the classic input, and is part of the cache
+  // key.
+  bool engine_to_move = false;
 };
 
 class BackendComputation {

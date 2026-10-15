@@ -39,7 +39,10 @@ namespace {
 // and history. We'll likely need to have configurable hash function that we'll
 // also reuse as a tree hash key.
 uint64_t ComputeEvalPositionHash(const EvalPosition& pos) {
-  return pos.pos.back().Hash();
+  // Opponent modeling: a position evaluated with the engine to move differs
+  // from the same position with the opponent to move (see IdentityPlane).
+  constexpr uint64_t kEngineToMove = 0x9e3779b97f4a7c15ULL;
+  return pos.pos.back().Hash() ^ (pos.engine_to_move ? kEngineToMove : 0);
 }
 
 struct CachedValue {

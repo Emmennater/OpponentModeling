@@ -523,7 +523,7 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
     } else if (n) {
       auto history = GetPositionHistoryAtNode(n);
       std::optional<EvalResult> nneval = backend_->GetCachedEvaluation(
-          EvalPosition{history.GetPositions(), {}});
+          EvalPosition{history.GetPositions(), {}, EngineToMove(history)});
       if (nneval) v = -nneval->q;
     }
     if (v) {
@@ -665,8 +665,8 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
             own = ", Lc0 " + percent(ours(white_score(node, ply)));
           } else {
             const PositionHistory history = GetPositionHistoryAtNode(node);
-            const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(
-                EvalPosition{history.GetPositions(), {}});
+            const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(EvalPosition{
+                history.GetPositions(), {}, EngineToMove(history)});
             if (eval) {
               // The network's value is for the side to move.
               const double q = ply % 2 == 1 ? -eval->q : eval->q;
@@ -2014,6 +2014,8 @@ void SearchWorker::ProcessPickedTask(int start_idx, int end_idx,
                                        EvalPosition{
                                            .pos = history.GetPositions(),
                                            .legal_moves = legal_moves,
+                                           .engine_to_move =
+                                               search_->EngineToMove(history),
                                        },
                                        picked_node.eval->AsPtr()) ==
                                    BackendComputation::FETCHED_IMMEDIATELY;
@@ -2787,8 +2789,8 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
 
   // We are in a leaf, which is not yet being processed.
   if (!node || node->GetNStarted() == 0) {
-    if (search_->backend_->GetCachedEvaluation(
-            EvalPosition{history_.GetPositions(), {}})) {
+    if (search_->backend_->GetCachedEvaluation(EvalPosition{
+            history_.GetPositions(), {}, search_->EngineToMove(history_)})) {
       // Make it return 0 to make it not use the slot, so that the function
       // tries hard to find something to cache even among unpopular moves.
       // In practice that slows things down a lot though, as it's not always
@@ -2796,7 +2798,8 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
       return 1;
     }
     auto moves = history_.Last().GetBoard().GenerateLegalMoves();
-    computation_->AddInput(EvalPosition{history_.GetPositions(), moves},
+    computation_->AddInput(EvalPosition{history_.GetPositions(), moves,
+                                        search_->EngineToMove(history_)},
                            EvalResultPtr{});
     return 1;
   }

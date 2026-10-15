@@ -141,6 +141,7 @@ void SelfPlayGame::PlayOpponentMove(int idx, bool training) {
   const Position& position = history.Last();
   const bool black_to_move = position.IsBlackToMove();
   const std::vector<Move> legal_moves = position.GetBoard().GenerateLegalMoves();
+  // The opponent is to move: no identity plane (engine_to_move is false).
   const EvalPosition eval_position{history.GetPositions(), legal_moves};
   const classic::SearchParams params(*options_[idx].uci_options);
 
@@ -381,9 +382,11 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
                                           .Last()
                                           .GetBoard()
                                           .GenerateLegalMoves();
+      // The search's own evaluation of its root, where it is to move.
       std::optional<EvalResult> nneval =
           options_[idx].backend->GetCachedEvaluation(EvalPosition{
-              tree_[idx]->GetPositionHistory().GetPositions(), legal_moves});
+              tree_[idx]->GetPositionHistory().GetPositions(), legal_moves,
+              search_->GetParams().GetIdentityPlane()});
       training_data_.Add(tree_[idx]->GetCurrentHead(),
                          tree_[idx]->GetPositionHistory(), best_eval,
                          played_eval, best_is_proof, best_move, move,
