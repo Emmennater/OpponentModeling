@@ -12,3 +12,4 @@ training/lczero-training/
 training/runs/
 training/data/
 training/nets/
+training/archive/
