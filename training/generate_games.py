@@ -32,7 +32,9 @@ interrupted run loses only the games in progress, whose partly written files
 are removed on the next start.
 
 --eval plays --net's games in training/data/eval/<network>/ instead, apart
-from the generations and their training data, to measure a network.
+from the generations and their training data, to measure a network; with
+--greedy, in eval/<network>-greedy/, the engine plays as in real games,
+always its best move (no temperature or noise).
 --report compares the generations and evaluations: the engine's results,
 how often it mates and how quickly. --pgn writes their games as PGN.
 
@@ -294,13 +296,19 @@ def main():
     parser.add_argument("--parallelism", type=int, default=16, help="games played at once")
     parser.add_argument("--eval", action="store_true",
                         help="play --net's games apart from the generations, to evaluate it")
+    parser.add_argument("--greedy", action="store_true",
+                        help="with --eval: the engine always plays its best move, as in real games")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
     parser.add_argument("--pgn", help="only write the generation's games to this PGN file")
     args = parser.parse_args()
     if args.eval:
         if not args.net:
             sys.exit("--eval needs --net")
-        folder = DATA / "eval" / net_name(args.net)
+        folder = DATA / "eval" / (net_name(args.net) + ("-greedy" if args.greedy else ""))
+        if args.greedy:
+            # No exploration: the temperature after move 40 (temp-endgame)
+            # applies even at temperature 0, so both go.
+            ENGINE.update({"temperature": 0, "temp-endgame": 0, "noise-epsilon": 0})
     else:
         folder = generation_dir(args.generation)
     if args.report:

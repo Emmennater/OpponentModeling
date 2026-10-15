@@ -21,7 +21,8 @@
 # Only generations up to N are read, through links in the run's data/ folder:
 # later ones were played by net<N> or after it. For experiments, WINDOW sets
 # how many of the newest games are read instead of the config's num_chunks,
-# and TAG names the network net<N>-<TAG>, to keep it apart from net<N>.
+# START the network to train from, and TAG names the result net<N>-<TAG>, to
+# keep it apart from net<N>.
 #
 # Usage, from Windows (after setup_wsl.sh), with the steps and learning rate
 # to train with:
@@ -40,7 +41,9 @@ TAG=${TAG:-}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="$HOME/.venvs/lc0-training/bin/python"
 NAME=$(printf 'net%02d' "$GENERATION")${TAG:+-$TAG}
-if [ "$GENERATION" -eq 1 ]; then
+if [ -n "${START:-}" ]; then
+  START="$(cd "$(dirname "$START")" && pwd)/$(basename "$START")"
+elif [ "$GENERATION" -eq 1 ]; then
   START="$HERE/../lc0/bin/791556.pb.gz"
 else
   START="$HERE/nets/$(printf 'net%02d' $((GENERATION - 1))).pb.gz"
