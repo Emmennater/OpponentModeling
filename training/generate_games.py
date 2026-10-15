@@ -13,7 +13,12 @@ mate. And from move 40 the engine plays its best move (temp-endgame 0, Lc0's
 made 791556's mates take a median of 86 half-moves against 59 greedily, and
 buried how quickly an opening mates under how the endgame was sampled.
 Networks trained here see the identity plane (IdentityPlane), which marks
-the positions where the engine is to move; 791556 does not.
+the positions where the engine is to move; 791556 does not. And the search
+prefers shorter wins more strongly (moves-left slope 0.02 and cap 0.5,
+Lc0's 0.007 and 0.2): a trained network's moves left knows which lines mate
+Maia-3 sooner, and with these net02 mated in a median of 54 half-moves
+greedily instead of 58 (791556: 58 instead of 59), so the search's choices,
+the policy's targets, follow it.
 
 The opponent (player 2) is Maia-3 with the playing settings' opponent model:
 rating 1500 against 1500, the closer look at depth 4 and strength 2 (an
@@ -79,8 +84,9 @@ MAX_RESTARTS = 5  # of Lc0 stopping by itself, in a row, before giving up
 VISITS = 800
 # Lc0's training run 1 (test80), without its opening book, with resignation
 # off (resign-percentage 0, so resign-playthrough and resign-wdlstyle do
-# nothing) and no sampling from move 40 (temp-endgame 0, Lc0's 0.6); smart
-# pruning off as in its 800-visit run 2.
+# nothing), no sampling from move 40 (temp-endgame 0, Lc0's 0.6) and a
+# stronger preference for shorter wins (moves-left slope 0.02 and cap 0.5,
+# Lc0's 0.007 and 0.2); smart pruning off as in its 800-visit run 2.
 ENGINE = {
     "cpuct": 1.20, "cpuct-at-root": 2.0, "root-has-own-cpuct-params": "true",
     "resign-percentage": 0, "temperature": 0.9, "temp-endgame": 0,
@@ -88,8 +94,8 @@ ENGINE = {
     "temp-visit-offset": -0.8, "fpu-strategy": "reduction", "fpu-value": 0.49,
     "fpu-strategy-at-root": "absolute", "fpu-value-at-root": 1.0,
     "policy-softmax-temp": 1.45, "noise-epsilon": 0.1, "noise-alpha": 0.12,
-    "sticky-endgames": "true", "moves-left-max-effect": 0.2,
-    "moves-left-threshold": 0.0, "moves-left-slope": 0.007,
+    "sticky-endgames": "true", "moves-left-max-effect": 0.5,
+    "moves-left-threshold": 0.0, "moves-left-slope": 0.02,
     "moves-left-quadratic-factor": 0.85, "moves-left-scaled-factor": 0.15,
     "moves-left-constant-factor": 0.0, "task-workers": 0,
     "smart-pruning-factor": 0.0,
