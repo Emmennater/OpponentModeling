@@ -72,6 +72,7 @@ NETS = ROOT / "training" / "nets"
 COLUMNS = ["engine_color", "result", "ending", "plies", "file", "moves"]
 GAMES = 5000  # per generation
 EVAL_GAMES = 500  # for --eval: the median half-moves to mate within about 2
+MAX_RESTARTS = 5  # of Lc0 stopping by itself, in a row, before giving up
 
 VISITS = 800
 # Lc0's training run 1 (test80), without its opening book, with resignation
@@ -192,12 +193,32 @@ def generate(folder, net, target, parallelism, greedy=False):
     if record.exists() and Path(record.read_text().strip()) != net:
         sys.exit(f"{label(folder)} was played by {record.read_text().strip()}, not {net}")
     record.write_text(f"{net}\n")
+    print(f"{label(folder)}, played by {net.name}")
+    if len(read_index(folder)) >= target:
+        print(f"{len(read_index(folder))} games already generated")
+        return "done"
+    # Lc0 stopping by itself before the end (a crash: its errors go to
+    # lc0.log) is restarted, MAX_RESTARTS times in a row at most.
+    restarts = 0
+    while True:
+        before = len(read_index(folder))
+        status = run_lc0(folder, net, target, parallelism, greedy)
+        if status != "failed":
+            break
+        restarts = 0 if len(read_index(folder)) > before else restarts + 1
+        if restarts > MAX_RESTARTS:
+            print(f"Lc0 keeps stopping before the end; see {folder / 'lc0.log'}.")
+            break
+        print(f"Lc0 stopped before the end (see {folder / 'lc0.log'}); restarting it.")
+    report()
+    return status
+
+
+def run_lc0(folder, net, target, parallelism, greedy):
+    """One run of Lc0's self-play towards `target` games in `folder`:
+    "done", "stopped" (Ctrl+C) or "failed" (Lc0 stopped by itself)."""
     games = read_index(folder)
     remove_orphans(folder, games)
-    print(f"{label(folder)}, played by {net.name}")
-    if len(games) >= target:
-        print(f"{len(games)} games already generated")
-        return
     index_path = folder / "games.tsv"
     if not index_path.exists():
         index_path.write_text("\t".join(COLUMNS) + "\n")
@@ -215,30 +236,39 @@ def generate(folder, net, target, parallelism, greedy=False):
         command += ["--player1.identity-plane=true"]
     command += [f"--player2.{name}={value}" for name, value in OPPONENT.items()]
     # Lc0 writes its training data under the current directory.
-    proc = subprocess.Popen(command, cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            text=True, bufsize=1)
-    bar = tqdm(total=target, initial=len(games), desc="Games", unit="game", smoothing=0.05)
-    counts = {"mate": 0, "win": 0}
-    try:
-        with index_path.open("a") as index:
-            for line in proc.stdout:
-                if not line.startswith("gameready"):
-                    continue
-                game = parse_game(line)
-                index.write("\t".join(game[c] for c in COLUMNS) + "\n")
-                index.flush()
-                counts["win"] += game["result"] == "win"
-                counts["mate"] += game["result"] == "win" and game["ending"] == "mate"
-                bar.update(1)
-                bar.set_postfix(wins=counts["win"], by_mate=counts["mate"])
-    except KeyboardInterrupt:
-        print("\nStopped; rerun to continue.")
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-        proc.wait()
-        bar.close()
-    report()
+    with (folder / "lc0.log").open("a") as log:
+        log.write(f"== {' '.join(command[:5])} ...\n")
+        log.flush()
+        proc = subprocess.Popen(command, cwd=folder, stdout=subprocess.PIPE, stderr=log,
+                                text=True, bufsize=1)
+        bar = tqdm(total=target, initial=len(games), desc="Games", unit="game", smoothing=0.05)
+        counts = {"mate": 0, "win": 0}
+        status = "failed"
+        try:
+            with index_path.open("a") as index:
+                for line in proc.stdout:
+                    if not line.startswith("gameready"):
+                        continue
+                    game = parse_game(line)
+                    index.write("\t".join(game[c] for c in COLUMNS) + "\n")
+                    index.flush()
+                    counts["win"] += game["result"] == "win"
+                    counts["mate"] += game["result"] == "win" and game["ending"] == "mate"
+                    bar.update(1)
+                    bar.set_postfix(wins=counts["win"], by_mate=counts["mate"])
+        except KeyboardInterrupt:
+            print("\nStopped; rerun to continue.")
+            status = "stopped"
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait()
+            bar.close()
+        if status != "stopped":
+            log.write(f"== exit code {proc.returncode}\n")
+            if len(read_index(folder)) >= target:
+                status = "done"
+    return status
 
 
 def quartiles(values):
