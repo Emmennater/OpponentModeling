@@ -40,6 +40,8 @@ are removed on the next start.
 from the generations and their training data, to measure a network; with
 --greedy, in eval/<network>-greedy/, the engine plays as in real games,
 always its best move (no temperature or noise).
+--set name=value (with --tag for the folder's name) changes an engine
+setting for an evaluation.
 --report compares the generations and evaluations: the engine's results,
 how often it mates and how quickly. --pgn writes their games as PGN.
 
@@ -173,8 +175,8 @@ def label(folder):
     return f"Generation {int(folder.name[3:])}"
 
 
-def eval_dir(net, greedy=False):
-    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else ""))
+def eval_dir(net, greedy=False, tag=""):
+    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else "") + (f"-{tag}" if tag else ""))
 
 
 def uses_identity_plane(net):
@@ -184,7 +186,7 @@ def uses_identity_plane(net):
     return config.exists() and "identity_plane: true" in config.read_text()
 
 
-def generate(folder, net, target, parallelism, greedy=False):
+def generate(folder, net, target, parallelism, greedy=False, overrides=None):
     net = Path(net).resolve()
     if not net.exists():
         sys.exit(f"{net} does not exist: train it first, or give --net")
@@ -202,7 +204,7 @@ def generate(folder, net, target, parallelism, greedy=False):
     restarts = 0
     while True:
         before = len(read_index(folder))
-        status = run_lc0(folder, net, target, parallelism, greedy)
+        status = run_lc0(folder, net, target, parallelism, greedy, overrides or {})
         if status != "failed":
             break
         restarts = 0 if len(read_index(folder)) > before else restarts + 1
@@ -214,7 +216,7 @@ def generate(folder, net, target, parallelism, greedy=False):
     return status
 
 
-def run_lc0(folder, net, target, parallelism, greedy):
+def run_lc0(folder, net, target, parallelism, greedy, overrides):
     """One run of Lc0's self-play towards `target` games in `folder`:
     "done", "stopped" (Ctrl+C) or "failed" (Lc0 stopped by itself)."""
     games = read_index(folder)
@@ -231,6 +233,7 @@ def run_lc0(folder, net, target, parallelism, greedy):
         # No exploration; the temperature from move 40 (temp-endgame) applies
         # even at temperature 0, so it goes too.
         engine.update({"temperature": 0, "temp-endgame": 0, "noise-epsilon": 0})
+    engine.update(overrides)
     command += [f"--{name}={value}" for name, value in engine.items()]
     if uses_identity_plane(net):
         command += ["--player1.identity-plane=true"]
@@ -350,6 +353,9 @@ def main():
     parser.add_argument("--parallelism", type=int, default=16, help="games played at once")
     parser.add_argument("--eval", action="store_true",
                         help="play --net's games apart from the generations, to evaluate it")
+    parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                        help="with --eval: an engine setting instead of ENGINE's (repeatable)")
+    parser.add_argument("--tag", default="", help="with --eval: a suffix for the folder, for --set")
     parser.add_argument("--greedy", action="store_true",
                         help="with --eval: the engine always plays its best move, as in real games")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
@@ -358,7 +364,7 @@ def main():
     if args.eval:
         if not args.net:
             sys.exit("--eval needs --net")
-        folder = eval_dir(args.net, args.greedy)
+        folder = eval_dir(args.net, args.greedy, args.tag)
     else:
         folder = generation_dir(args.generation)
     if args.report:
@@ -368,7 +374,8 @@ def main():
     else:
         games = args.games or (EVAL_GAMES if args.eval else GAMES)
         generate(folder, args.net or default_net(args.generation), games, args.parallelism,
-                 greedy=args.eval and args.greedy)
+                 greedy=args.eval and args.greedy,
+                 overrides=dict(s.split("=", 1) for s in args.set) if args.eval else None)
 
 
 if __name__ == "__main__":
