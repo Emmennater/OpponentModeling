@@ -3,25 +3,28 @@ opponent, each followed by training the network that plays the next, as in
 Lc0's own runs.
 
 For each generation N, from the first not yet finished:
-1. Games: generation N is played by the newest network, 791556 for the
-   first (generate_games.py, GAMES games).
-2. Check: generation N is the first test of the network that plays it. After
-   its first CHECK_GAMES games, they are compared with the previous
-   generation, played by the previous network. If the new network is clearly
-   worse at what it is trained for, by the thresholds below, the loop stops
-   there, for a look before it goes on (rerun with --no-check to go on
-   anyway). With 500 games, the median half-moves to mate is known within
-   about 1.2 and the shares within about 2 points.
+1. Check (from the second generation on): the network about to play it,
+   net<N-1>, against the one that played the generation before, both
+   evaluated greedily as in real games (generate_games.py --eval --greedy,
+   EVAL_GAMES games each, kept apart from the generations). If the new
+   network is clearly worse at mating quickly, by the thresholds below, the
+   loop stops there, for a look before it goes on (rerun with --no-check to
+   go on anyway). With 500 games, the median half-moves to mate is known
+   within about 1.2 and the shares within about 2 points.
+2. Games: generation N is played by the newest network, 791556 for the
+   first (generate_games.py, GAMES games, with exploration).
 3. Training: net<N> from the network that played generation N, on the newest
    generations (train_net.sh in WSL, STEPS steps at learning rate LR).
 
-Every step resumes where it stopped: a rerun picks up the games, the
-training's checkpoints and the finished networks. Ctrl+C stops it.
---report compares the generations so far.
+The generation games explore (temperature over the first 40 moves, noise),
+which their medians include; the greedy evaluations measure how the networks
+play. Every step resumes where it stopped: a rerun picks up the games, the
+evaluations, the training's checkpoints and the finished networks. Ctrl+C
+stops it. --report compares the generations and evaluations so far.
 
 Usage (from Windows, with the repository's .venv, after setup_wsl.sh; a
 generation of 5,000 games takes 1.5 to 2.5 hours, its training about 5
-minutes):
+minutes, an evaluation about 5):
     .venv\\Scripts\\python training\\loop.py --generations 10
 """
 
@@ -37,8 +40,7 @@ import generate_games as gg  # noqa: E402
 HERE = Path(__file__).resolve().parent
 STEPS = 400
 LR = 0.0001
-CHECK_GAMES = 500
-# The new network is clearly worse if, against the previous generation:
+# The new network is clearly worse if, in greedy play, against the previous:
 WORSE_MEDIAN = 3  # its median half-moves to mate is this many more,
 WORSE_MATES = 0.04  # or its share of games won by mate this much lower,
 WORSE_LOSSES = 0.02  # or its share of games lost this much higher.
@@ -62,12 +64,20 @@ def describe(s):
             f"median {s['median']:.0f} half-moves to mate")
 
 
-def check(generation):
-    """Whether generation N's network is not clearly worse than generation
-    N-1's, from N's first games; prints the comparison."""
-    before, now = stats(gg.generation_dir(generation - 1)), stats(gg.generation_dir(generation))
-    print(f"Generation {generation - 1}: {describe(before)}")
-    print(f"Generation {generation}: {describe(now)}")
+def evaluate(net, parallelism):
+    """Plays `net`'s greedy evaluation; False if stopped before the end."""
+    folder = gg.eval_dir(net, greedy=True)
+    gg.generate(folder, net, gg.EVAL_GAMES, parallelism, greedy=True)
+    return len(gg.read_index(folder)) >= gg.EVAL_GAMES
+
+
+def check(before_net, now_net):
+    """Whether `now_net` is not clearly worse than `before_net` in their
+    greedy evaluations; prints the comparison."""
+    before = stats(gg.eval_dir(before_net, greedy=True))
+    now = stats(gg.eval_dir(now_net, greedy=True))
+    print(f"{gg.net_name(before_net)}, greedy: {describe(before)}")
+    print(f"{gg.net_name(now_net)}, greedy: {describe(now)}")
     problems = []
     if now["median"] > before["median"] + WORSE_MEDIAN:
         problems.append("slower mates")
@@ -76,16 +86,16 @@ def check(generation):
     if now["losses"] > before["losses"] + WORSE_LOSSES:
         problems.append("more losses")
     if problems:
-        print(f"The new network looks worse ({', '.join(problems)}): stopping here. "
+        print(f"{gg.net_name(now_net)} looks worse ({', '.join(problems)}): stopping here. "
               f"Rerun with --no-check to go on anyway.")
     return not problems
 
 
-def play(generation, target, parallelism):
-    """Plays generation N up to `target` games; False if stopped before."""
+def play(generation, parallelism):
+    """Plays generation N; False if stopped before the end."""
     folder = gg.generation_dir(generation)
-    gg.generate(folder, gg.default_net(generation), target, parallelism)
-    return len(gg.read_index(folder)) >= target
+    gg.generate(folder, gg.default_net(generation), gg.GAMES, parallelism)
+    return len(gg.read_index(folder)) >= gg.GAMES
 
 
 def train(generation, steps, lr):
@@ -115,20 +125,22 @@ def main():
         gg.report()
         return
     for generation in range(1, args.generations + 1):
-        folder = gg.generation_dir(generation)
-        if len(gg.read_index(folder)) < gg.GAMES:
+        if len(gg.read_index(gg.generation_dir(generation))) < gg.GAMES:
             if generation > 1 and not args.no_check:
-                if not play(generation, CHECK_GAMES, args.parallelism):
+                before, now = gg.default_net(generation - 1), gg.default_net(generation)
+                if not (evaluate(before, args.parallelism) and evaluate(now, args.parallelism)):
                     return
-                if not check(generation):
+                if not check(before, now):
                     return
-            if not play(generation, gg.GAMES, args.parallelism):
+            if not play(generation, args.parallelism):
                 return
         if not train(generation, args.steps, args.lr):
             print(f"Training net{generation:02d} did not finish; rerun to continue.")
             return
-    print(f"Generation {args.generations} is done; its games trained "
-          f"training/nets/net{args.generations:02d}.pb.gz.")
+    last = gg.NETS / f"net{args.generations:02d}.pb.gz"
+    if evaluate(last, args.parallelism):
+        check(gg.default_net(args.generations), last)
+    print(f"Generation {args.generations} is done; its games trained {last}.")
 
 
 if __name__ == "__main__":

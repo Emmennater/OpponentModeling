@@ -4,11 +4,16 @@ the engine against the modeled opponent, in Lc0's self-play.
 The engine (player 1) searches 800 visits a move with the self-play settings
 of Lc0's training run 1 (test80, the residual-network run closest to 791556,
 see https://training.lczero.org/training_runs), with smart pruning off as in
-Lc0's 800-visit run, and one change: nobody resigns. The goal is to win
+Lc0's 800-visit run, and two changes. Nobody resigns: the goal is to win
 quickly by checkmate, so every game is played out, to mate or a draw; Lc0
 drops the rare game that reaches its 450-ply limit. Each position's
 plies_left in the training data is then the number of half-moves to the
-mate.
+mate. And from move 40 the engine plays its best move (temp-endgame 0, Lc0's
+0.6), as Leela's odds networks nearly do (0.05 to 0.1): the sampling there
+made 791556's mates take a median of 86 half-moves against 59 greedily, and
+buried how quickly an opening mates under how the endgame was sampled.
+Networks trained here see the identity plane (IdentityPlane), which marks
+the positions where the engine is to move; 791556 does not.
 
 The opponent (player 2) is Maia-3 with the playing settings' opponent model:
 rating 1500 against 1500, the closer look at depth 4 and strength 2 (an
@@ -69,12 +74,13 @@ GAMES = 5000  # per generation
 EVAL_GAMES = 500  # for --eval: the median half-moves to mate within about 2
 
 VISITS = 800
-# Lc0's training run 1 (test80), without its opening book and with
-# resignation off (resign-percentage 0, so resign-playthrough and
-# resign-wdlstyle do nothing); smart pruning off as in its 800-visit run 2.
+# Lc0's training run 1 (test80), without its opening book, with resignation
+# off (resign-percentage 0, so resign-playthrough and resign-wdlstyle do
+# nothing) and no sampling from move 40 (temp-endgame 0, Lc0's 0.6); smart
+# pruning off as in its 800-visit run 2.
 ENGINE = {
     "cpuct": 1.20, "cpuct-at-root": 2.0, "root-has-own-cpuct-params": "true",
-    "resign-percentage": 0, "temperature": 0.9, "temp-endgame": 0.60,
+    "resign-percentage": 0, "temperature": 0.9, "temp-endgame": 0,
     "tempdecay-moves": 60, "tempdecay-delay-moves": 20, "temp-cutoff-move": 40,
     "temp-visit-offset": -0.8, "fpu-strategy": "reduction", "fpu-value": 0.49,
     "fpu-strategy-at-root": "absolute", "fpu-value-at-root": 1.0,
@@ -166,7 +172,18 @@ def label(folder):
     return f"Generation {int(folder.name[3:])}"
 
 
-def generate(folder, net, target, parallelism):
+def eval_dir(net, greedy=False):
+    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else ""))
+
+
+def uses_identity_plane(net):
+    """Whether `net` was trained with the identity plane, by the training
+    config train_net.sh keeps next to it (net<N>.yaml); 791556 was not."""
+    config = Path(net).with_name(net_name(net) + ".yaml")
+    return config.exists() and "identity_plane: true" in config.read_text()
+
+
+def generate(folder, net, target, parallelism, greedy=False):
     net = Path(net).resolve()
     if not net.exists():
         sys.exit(f"{net} does not exist: train it first, or give --net")
@@ -188,7 +205,14 @@ def generate(folder, net, target, parallelism):
                f"--parallelism={parallelism}", "--training=true",
                "--backend=multiplexing", "--backend-opts=backend=cuda-fp16",
                f"--weights={net}", f"--player1.visits={VISITS}"]
-    command += [f"--{name}={value}" for name, value in ENGINE.items()]
+    engine = dict(ENGINE)
+    if greedy:
+        # No exploration; the temperature from move 40 (temp-endgame) applies
+        # even at temperature 0, so it goes too.
+        engine.update({"temperature": 0, "temp-endgame": 0, "noise-epsilon": 0})
+    command += [f"--{name}={value}" for name, value in engine.items()]
+    if uses_identity_plane(net):
+        command += ["--player1.identity-plane=true"]
     command += [f"--player2.{name}={value}" for name, value in OPPONENT.items()]
     # Lc0 writes its training data under the current directory.
     proc = subprocess.Popen(command, cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -304,11 +328,7 @@ def main():
     if args.eval:
         if not args.net:
             sys.exit("--eval needs --net")
-        folder = DATA / "eval" / (net_name(args.net) + ("-greedy" if args.greedy else ""))
-        if args.greedy:
-            # No exploration: the temperature after move 40 (temp-endgame)
-            # applies even at temperature 0, so both go.
-            ENGINE.update({"temperature": 0, "temp-endgame": 0, "noise-epsilon": 0})
+        folder = eval_dir(args.net, args.greedy)
     else:
         folder = generation_dir(args.generation)
     if args.report:
@@ -317,7 +337,8 @@ def main():
         write_pgn(folder, args.pgn)
     else:
         games = args.games or (EVAL_GAMES if args.eval else GAMES)
-        generate(folder, args.net or default_net(args.generation), games, args.parallelism)
+        generate(folder, args.net or default_net(args.generation), games, args.parallelism,
+                 greedy=args.eval and args.greedy)
 
 
 if __name__ == "__main__":

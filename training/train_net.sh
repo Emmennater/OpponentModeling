@@ -120,6 +120,9 @@ yaml.safe_dump(cfg, open(sys.argv[7], 'w'))
   fi
 fi
 
+# The training config goes next to the network, first: generate_games.py reads
+# from it whether the network needs Lc0's IdentityPlane.
+cp "$RUN/config.yaml" "$HERE/nets/$NAME.yaml"
 # Whole or not at all: the loop takes a network in nets/ as finished.
 cp "$RUN/$NAME.pb.gz" "$HERE/nets/$NAME.pb.gz.part"
 mv "$HERE/nets/$NAME.pb.gz.part" "$HERE/nets/$NAME.pb.gz"

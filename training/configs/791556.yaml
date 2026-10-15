@@ -34,6 +34,7 @@ dataset:
   value_discount: 0.995
   skip_unsearched: false
   blank_unsearched_policy: true
+  identity_plane: true                 # plane 110 marks the engine's positions; Lc0 needs IdentityPlane on
 
 training:
   precision: 'single'

@@ -8,10 +8,12 @@ opponent's records (0 visits) handled one of two ways:
 
 Either way every position's value target must be the game's result for the
 side to move, discounted by value_discount ** plies_left, the rest going to
-the draw. Runs on the CPU, so it can run while games are generated.
+the draw. With identity (identity_plane), input plane 110 must be all ones
+in the engine's records and all zeros in the opponent's. Runs on the CPU, so
+it can run while games are generated.
 
 Usage, from Windows:
-    wsl -d Ubuntu -- ~/.venvs/lc0-training/bin/python training/check_loader.py 1 0.995 blank
+    wsl -d Ubuntu -- ~/.venvs/lc0-training/bin/python training/check_loader.py 1 0.995 blank identity
 """
 
 import gzip
@@ -24,11 +26,13 @@ sys.path.insert(0, str(HERE / "lczero-training" / "tf"))
 from chunkparser import ChunkParser  # noqa: E402
 
 generation, discount, mode = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+identity = sys.argv[4:] == ["identity"]
 folder = HERE / "data" / f"gen{generation:02d}"
 lines = (folder / "games.tsv").read_text().splitlines()[1:]
 games = [dict(zip(["engine_color", "result", "ending", "plies", "file", "moves"], l.split("\t"))) for l in lines]
 parser = ChunkParser([], 1, sample=1, workers=0, value_discount=discount,
-                     skip_unsearched=mode == "skip", blank_unsearched_policy=mode == "blank")
+                     skip_unsearched=mode == "skip", blank_unsearched_policy=mode == "blank",
+                     identity_plane=identity)
 inner = parser.inner
 records = yielded = wrong = opponent_positions = 0
 for g in games:
@@ -41,7 +45,10 @@ for g in games:
     expected_count = sum(v > 0 for v in visits) if mode == "skip" else len(visits)
     wrong += len(out) != expected_count
     for rec in out:
-        _, probs, winner, _, plies = inner.convert_v6_to_tuple(rec)
+        planes, probs, winner, _, plies = inner.convert_v6_to_tuple(rec)
+        plane110 = set(struct.unpack_from("64f", planes, 110 * 64 * 4))
+        engine = struct.unpack_from("I", rec, 8340)[0] > 0
+        wrong += plane110 != ({1.0} if identity and engine else {0.0})
         w, d, l = struct.unpack("fff", winner)
         n = struct.unpack("f", plies)[0]
         result_q = struct.unpack_from("f", rec, 8308)[0]
