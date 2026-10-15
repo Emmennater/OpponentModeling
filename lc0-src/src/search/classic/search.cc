@@ -262,6 +262,12 @@ inline double WDLRescale(float& v, float& d, float wdl_rescale_ratio,
 }
 }  // namespace
 
+int Search::GetReportedDepth() const REQUIRES(nodes_mutex_) {
+  return std::max(reported_depth_,
+                  static_cast<int>(cum_depth_ /
+                                   (total_playouts_ ? total_playouts_ : 1)));
+}
+
 void Search::SendUciInfo() REQUIRES(nodes_mutex_) REQUIRES(counters_mutex_) {
   const auto max_pv = params_.GetMultiPv();
   const auto edges = GetBestChildrenNoTemperature(root_node_, max_pv, 0);
@@ -273,7 +279,8 @@ void Search::SendUciInfo() REQUIRES(nodes_mutex_) REQUIRES(counters_mutex_) {
 
   // Info common for all multipv variants.
   ThinkingInfo common_info;
-  common_info.depth = cum_depth_ / (total_playouts_ ? total_playouts_ : 1);
+  common_info.depth = GetReportedDepth();
+  reported_depth_ = common_info.depth;
   common_info.seldepth = max_depth_;
   common_info.time = GetTimeSinceStart();
   if (!per_pv_counters) {
@@ -390,9 +397,7 @@ void Search::MaybeOutputInfo() {
   Mutex::Lock counters_lock(counters_mutex_);
   if (!bestmove_is_sent_ && current_best_edge_ &&
       (current_best_edge_.edge() != last_outputted_info_edge_ ||
-       last_outputted_uci_info_.depth !=
-           static_cast<int>(cum_depth_ /
-                            (total_playouts_ ? total_playouts_ : 1)) ||
+       last_outputted_uci_info_.depth != GetReportedDepth() ||
        last_outputted_uci_info_.seldepth != max_depth_ ||
        last_outputted_uci_info_.time + kUciInfoMinimumFrequencyMs <
            GetTimeSinceStart())) {

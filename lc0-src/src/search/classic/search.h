@@ -119,6 +119,11 @@ class Search {
   void MaybeTriggerStop(const IterationStats& stats, StoppersHints* hints);
   void MaybeOutputInfo();
   void SendUciInfo();  // Requires nodes_mutex_ to be held.
+  // The depth to report: the average depth of the paths taken, but never
+  // below a depth reported earlier in the search. Once a mate is proven, the
+  // paths through it are short and the average falls; GUIs such as En
+  // Croissant ignore lines whose depth went down, and so the mate.
+  int GetReportedDepth() const REQUIRES(nodes_mutex_);
   // Sets stop to true and notifies watchdog thread.
   void FireStopInternal();
 
@@ -270,6 +275,8 @@ class Search {
   uint16_t max_depth_ GUARDED_BY(nodes_mutex_) = 0;
   // Cumulative depth of all paths taken in PickNodetoExtend.
   uint64_t cum_depth_ GUARDED_BY(nodes_mutex_) = 0;
+  // The highest depth reported in this search; see GetReportedDepth().
+  int reported_depth_ GUARDED_BY(nodes_mutex_) = 0;
 
   std::optional<std::chrono::steady_clock::time_point> nps_start_time_
       GUARDED_BY(counters_mutex_);
