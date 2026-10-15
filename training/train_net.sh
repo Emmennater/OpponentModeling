@@ -18,9 +18,15 @@
 # script (Ctrl+C) stops the training too; one left running by a closed window
 # is stopped before resuming.
 #
+# Only generations up to N are read, through links in the run's data/ folder:
+# later ones were played by net<N> or after it. For experiments, WINDOW sets
+# how many of the newest games are read instead of the config's num_chunks,
+# and TAG names the network net<N>-<TAG>, to keep it apart from net<N>.
+#
 # Usage, from Windows (after setup_wsl.sh), with the steps and learning rate
 # to train with:
 #     wsl -d Ubuntu -- bash training/train_net.sh 1 400 0.0001
+#     wsl -d Ubuntu -- env WINDOW=5000 TAG=newest bash training/train_net.sh 2 400 0.0001
 
 set -euo pipefail
 
@@ -28,10 +34,12 @@ GENERATION=$1
 STEPS=${2:-400}
 LR=${3:-0.0001}
 TEST_STEPS=50
+WINDOW=${WINDOW:-}
+TAG=${TAG:-}
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="$HOME/.venvs/lc0-training/bin/python"
-NAME=$(printf 'net%02d' "$GENERATION")
+NAME=$(printf 'net%02d' "$GENERATION")${TAG:+-$TAG}
 if [ "$GENERATION" -eq 1 ]; then
   START="$HERE/../lc0/bin/791556.pb.gz"
 else
@@ -53,17 +61,29 @@ if stop_training; then
 fi
 
 if ! finished; then
+  rm -rf "$RUN/data"
+  mkdir -p "$RUN/data"
+  for dir in "$HERE"/data/gen[0-9][0-9]; do
+    if [ "$((10#${dir##*gen}))" -le "$GENERATION" ]; then
+      ln -s "$dir" "$RUN/data/$(basename "$dir")"
+    fi
+  done
   "$PYTHON" -c "
 import sys, yaml
 cfg = yaml.safe_load(open(sys.argv[1]))
 cfg['name'] = sys.argv[2]
+cfg['dataset']['input'] = sys.argv[8]
+if sys.argv[9]:
+    cfg['dataset']['num_chunks'] = int(sys.argv[9])
 cfg['training'].update({
     'path': sys.argv[3], 'total_steps': int(sys.argv[4]), 'lr_values': [float(sys.argv[5])],
     'lr_boundaries': [], 'warmup_steps': min(50, int(sys.argv[4]) // 4),
     'test_steps': int(sys.argv[6]), 'checkpoint_steps': int(sys.argv[6]) * 2,
     'num_test_positions': 20000})
 yaml.safe_dump(cfg, open(sys.argv[7], 'w'))
-" "$HERE/configs/791556.yaml" "$NAME" "$HERE/runs" "$STEPS" "$LR" "$TEST_STEPS" "$RUN/config.yaml"
+" "$HERE/configs/791556.yaml" "$NAME" "$HERE/runs" "$STEPS" "$LR" "$TEST_STEPS" "$RUN/config.yaml" \
+    "$RUN/data/gen*/data-*/" "$WINDOW"
+  echo "== Reading $(ls "$RUN/data" | tr '\n' ' ')${WINDOW:+(newest $WINDOW games)}"
 
   cd "$HERE/lczero-training/tf"
   if [ ! -f "$RUN/checkpoint" ]; then
