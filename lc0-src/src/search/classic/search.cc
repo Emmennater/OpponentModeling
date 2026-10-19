@@ -669,28 +669,28 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
     }
     return moves;
   };
-  // The main network's own evaluation of a position, without the opponent
-  // model or the search, from the cache, in centipawns for White (Lc0's
-  // "centipawn" score); the result if the game is over. Empty if not cached.
-  auto evaluation = [&](const Node* node, int ply) -> std::string {
-    double wl;  // For White.
-    if (node->IsTerminal()) {
-      // The node's value is for the side that just moved into it.
-      wl = ply % 2 == 1 ? node->GetWL() : -node->GetWL();
-      return wl > 0 ? "1-0" : wl < 0 ? "0-1" : "1/2-1/2";
-    }
-    const PositionHistory history = GetPositionHistoryAtNode(node);
-    const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(
-        EvalPosition{history.GetPositions(), {}, EngineToMove(history)});
-    if (!eval) return "";
-    // The network's value is for the side to move.
-    wl = std::clamp<double>(ply % 2 == 1 ? -eval->q : eval->q, -1.0, 1.0);
-    const long cp = std::lround(90 * std::tan(1.5637541897 * wl));
-    return (cp > 0 ? "+" : "") + std::to_string(cp);
+  // OpponentDiscount discounts a value by the plies to the game's predicted
+  // end, so a sure win far from the end looks like 85%. The export undoes it
+  // with the node's own estimate of the plies left, so that the score shows
+  // how won the position is rather than how long the game may last.
+  const float discount = opponent_backend_ && backend_attributes_.has_mlh &&
+                                 params_.GetOpponentWinValue() >= 1.0f
+                             ? params_.GetOpponentDiscount()
+                             : 1.0f;
+  // The search's expected score at a node, playing on against the modeled
+  // opponent, for the side this engine plays, the root's side to move. The
+  // node's value is for the side that just moved into it; ply is the node's.
+  auto expected_score = [&](const Node* node, int ply) {
+    const double wl = std::clamp<double>(
+        node->GetWL() / std::pow(discount, std::max(0.0f, node->GetM())), -1.0,
+        1.0);
+    const bool mover_black = ply % 2 == 0;
+    return std::string(root_black ? "Black " : "White ") +
+           percent((1.0 + (mover_black == root_black ? wl : -wl)) / 2);
   };
   // Each move has one comment, since a GUI shows only one: the opponent
-  // model's probability for the opponent's moves, and Lc0's evaluation at the
-  // end of a line.
+  // model's probability for the opponent's moves, and the expected score where
+  // a line ends, whether by the end of the search or the export's limits.
   std::function<void(const Node*, int, int, bool)> write =
       [&](const Node* node, int depth, int ply, bool need_number) {
         const std::vector<EdgeAndNode> moves = shown(node, depth, ply);
@@ -710,7 +710,7 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
           if (edge.GetN() == 0) {
             append("not searched yet");
           } else if (shown(edge.node(), depth + 1, ply + 1).empty()) {
-            append(evaluation(edge.node(), ply + 1));
+            append(expected_score(edge.node(), ply + 1));
           }
           if (!comment.empty()) add("{" + comment + "}");
         };
@@ -733,11 +733,22 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   write(root_node_, 1, root_ply, true);
   add("*");
 
-  // Lines of at most 80 characters, broken at spaces.
+  // Lines of at most 80 characters, broken at spaces, but not inside a comment
+  // or within a move's number, the move and its comment, which stay on one
+  // line.
   std::string wrapped;
   size_t line_start = 0;
   for (size_t i = 0; i < text.size();) {
     size_t next = text.find(' ', i);
+    while (next != std::string::npos && next + 1 < text.size()) {
+      if (text[next + 1] == '{') {
+        next = text.find(' ', text.find('}', next));
+      } else if (text[next - 1] == '.') {
+        next = text.find(' ', next + 1);
+      } else {
+        break;
+      }
+    }
     if (next == std::string::npos) next = text.size();
     if (next - line_start > 80 && i > line_start) {
       wrapped.back() = '\n';
@@ -756,8 +767,8 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   file << "[Event \"Lc0 (OM) search tree\"]\n[Site \"?\"]\n"
        << "[Annotator \"Lc0 (OM): the opponent's likely replies with their "
           "probabilities; at the end of each line, the expected score of the "
-          "side this engine plays, playing on against the modeled opponent, "
-          "and Lc0's own evaluation of the position for that side\"]\n"
+          "side this engine plays, playing on against the modeled "
+          "opponent\"]\n"
        << "[Date \"????.??.??\"]\n[Round \"-\"]\n[White \"?\"]\n"
        << "[Black \"?\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \""
        << PositionToFen(root) << "\"]\n\n"
