@@ -1,0 +1,57 @@
+# Which of the fine-tuning's heads make net09 mate Maia sooner? For
+# training/match.py: 791556 and net09 as they are, and each with the other's
+# moves left (moves-left-net: Lc0's MovesLeftWeights, each network
+# evaluating with its own body; the policy, value and draw stay the main
+# network's).
+#
+# If only the moves left matters, 791556 with net09's moves left mates as
+# soon as net09, and net09 with 791556's as late as 791556. Lc0 scales the
+# moves left's effect by how decisive the value is, so the moves left may
+# also need net09's value to show.
+
+games: 500        # per engine, half with each color: the median half-moves
+                  # to mate is known within about 2
+parallelism: 16
+
+engine:
+  visits: 800
+  greedy: true
+
+engines:
+  "791556":
+    net: lc0/bin/791556.pb.gz
+  net09:
+    net: training/nets/net09.pb.gz
+  791556+net09-ml:
+    net: lc0/bin/791556.pb.gz
+    moves-left-net: training/nets/net09.pb.gz
+  net09+791556-ml:
+    net: training/nets/net09.pb.gz
+    moves-left-net: lc0/bin/791556.pb.gz
+  # The policy apart (policy-net: Lc0's PolicyWeights): if net09's value and
+  # moves left with 791556's policy mate as soon as net09, its policy adds
+  # nothing.
+  net09+791556-policy:
+    net: training/nets/net09.pb.gz
+    policy-net: lc0/bin/791556.pb.gz
+  791556+net09-policy:
+    net: lc0/bin/791556.pb.gz
+    policy-net: training/nets/net09.pb.gz
+  # No preference for shorter wins at all: what the value and policy do by
+  # themselves, and what the moves left adds to each network.
+  791556-no-ml:
+    net: lc0/bin/791556.pb.gz
+    moves-left-max-effect: 0
+  net09-no-ml:
+    net: training/nets/net09.pb.gz
+    moves-left-max-effect: 0
+
+# The generation games' opponent.
+opponent:
+  opponent-deep-tactics: 2.0
+  opponent-deep-tactics-depth: 4
+
+opponents:
+  maia-1500:
+    opponent-model-rating: 1500
+    opponent-model-own-rating: 1500

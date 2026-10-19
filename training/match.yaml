@@ -1,0 +1,52 @@
+# Engines against opponents, for training/match.py: every engine below plays
+# every opponent below, `games` games each. Results go to
+# training/data/matches/<this file's name>/; copy this file to set up another
+# comparison (python training\match.py training\my_test.yaml).
+#
+# Settings are Lc0's self-play flags, without the leading "--" (lc0.exe
+# selfplay --help lists them), and start from those of
+# training/generate_games.py: ENGINE for the engines, OPPONENT for the
+# opponents. Only what differs needs to be given here.
+#
+# Renaming an engine or opponent starts its games afresh; changing the
+# settings of one that already has games is refused, so that a pairing is
+# never played with two settings (rename it, or remove its folder).
+
+games: 500        # per engine and opponent, half with each color: with 500,
+                  # the median half-moves to mate is known within about 2
+parallelism: 16   # games played at once
+
+# Shared by all engines; each engine can change any of it.
+engine:
+  net: training/nets/net09.pb.gz   # relative to the repository, or absolute
+  visits: 800                      # per move
+  greedy: true                     # always the best move, as in real games;
+                                   # false keeps ENGINE's temperature and noise
+
+engines:
+  # As in the generation games: moves-left slope 0.02 and cap 0.5.
+  slope-0.02: {}
+  # Lc0's own preference for shorter wins.
+  slope-0.007:
+    moves-left-slope: 0.007
+    moves-left-max-effect: 0.2
+
+# Shared by all opponents; each opponent can change any of it. The rating
+# changes Maia-3's style more than its blunders: the closer look
+# (opponent-deep-tactics strength and -depth) decides how much it sees.
+# Depth 4 and strength 2 are an upper bound on 1500 blitz players
+# (tools/calibrate_closer_look.py).
+opponent:
+  opponent-deep-tactics: 2.0
+  opponent-deep-tactics-depth: 4
+
+opponents:
+  maia-1100:
+    opponent-model-rating: 1100
+    opponent-model-own-rating: 1100   # the rating Maia-3 sees across the board
+  maia-1500:
+    opponent-model-rating: 1500
+    opponent-model-own-rating: 1500
+  maia-1900:
+    opponent-model-rating: 1900
+    opponent-model-own-rating: 1900

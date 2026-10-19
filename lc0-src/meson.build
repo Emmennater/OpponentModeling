@@ -190,6 +190,7 @@ files += [
   'src/neural/backends/network_trivial.cc',
   'src/neural/memcache.cc',
   'src/neural/network_legacy.cc',
+  'src/neural/split_heads.cc',
   'src/neural/onnx/adapters.cc',
   'src/neural/onnx/builder.cc',
   'src/neural/onnx/converter.cc',

@@ -178,6 +178,8 @@ def net_name(net):
 def label(folder):
     if folder.parent.name == "eval":
         return f"Evaluation of {folder.name}"
+    if folder.parent.parent.name == "matches":
+        return f"Match {folder.parent.name}, {folder.name}"
     return f"Generation {int(folder.name[3:])}"
 
 
@@ -192,7 +194,11 @@ def uses_identity_plane(net):
     return config.exists() and "identity_plane: true" in config.read_text()
 
 
-def generate(folder, net, target, parallelism, greedy=False, overrides=None):
+def generate(folder, net, target, parallelism, greedy=False, overrides=None, opponent=None,
+             visits=VISITS, summary=True):
+    """Plays games in `folder` until it has `target`: "done", "stopped"
+    (Ctrl+C) or "failed". `overrides` changes ENGINE's settings, `opponent`
+    OPPONENT's; `summary` prints report() at the end."""
     net = Path(net).resolve()
     if not net.exists():
         sys.exit(f"{net} does not exist: train it first, or give --net")
@@ -210,7 +216,8 @@ def generate(folder, net, target, parallelism, greedy=False, overrides=None):
     restarts = 0
     while True:
         before = len(read_index(folder))
-        status = run_lc0(folder, net, target, parallelism, greedy, overrides or {})
+        status = run_lc0(folder, net, target, parallelism, greedy, overrides or {}, opponent or {},
+                         visits)
         if status != "failed":
             break
         restarts = 0 if len(read_index(folder)) > before else restarts + 1
@@ -218,11 +225,12 @@ def generate(folder, net, target, parallelism, greedy=False, overrides=None):
             print(f"Lc0 keeps stopping before the end; see {folder / 'lc0.log'}.")
             break
         print(f"Lc0 stopped before the end (see {folder / 'lc0.log'}); restarting it.")
-    report()
+    if summary:
+        report()
     return status
 
 
-def run_lc0(folder, net, target, parallelism, greedy, overrides):
+def run_lc0(folder, net, target, parallelism, greedy, overrides, opponent, visits):
     """One run of Lc0's self-play towards `target` games in `folder`:
     "done", "stopped" (Ctrl+C) or "failed" (Lc0 stopped by itself)."""
     games = read_index(folder)
@@ -233,7 +241,7 @@ def run_lc0(folder, net, target, parallelism, greedy, overrides):
     command = [str(LC0), "selfplay", f"--games={target - len(games)}",
                f"--parallelism={parallelism}", "--training=true",
                "--backend=multiplexing", "--backend-opts=backend=cuda-fp16",
-               f"--weights={net}", f"--player1.visits={VISITS}"]
+               f"--weights={net}", f"--player1.visits={visits}"]
     engine = dict(ENGINE)
     if greedy:
         # No exploration; the temperature from move 40 (temp-endgame) applies
@@ -243,7 +251,7 @@ def run_lc0(folder, net, target, parallelism, greedy, overrides):
     command += [f"--{name}={value}" for name, value in engine.items()]
     if uses_identity_plane(net):
         command += ["--player1.identity-plane=true"]
-    command += [f"--player2.{name}={value}" for name, value in OPPONENT.items()]
+    command += [f"--player2.{name}={value}" for name, value in {**OPPONENT, **opponent}.items()]
     # Lc0 writes its training data under the current directory.
     with (folder / "lc0.log").open("a") as log:
         log.write(f"== {' '.join(command[:5])} ...\n")

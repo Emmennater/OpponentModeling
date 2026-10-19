@@ -620,107 +620,106 @@ void Search::ExportTree() const REQUIRES(nodes_mutex_) {
   const int root_ply =
       2 * (std::stoi(root_fen.substr(root_fen.rfind(' ') + 1)) - 1) +
       (root_black ? 1 : 0);
-  // OpponentDiscount discounts a value by the plies to the game's predicted
-  // end, so a sure win far from the end looks like 85%. The export undoes it
-  // with the node's own estimate of the plies left, so that the score shows
-  // how won the position is rather than how long the game may last.
-  const float discount = opponent_backend_ && backend_attributes_.has_mlh &&
-                                 params_.GetOpponentWinValue() >= 1.0f
-                             ? params_.GetOpponentDiscount()
-                             : 1.0f;
-  // White's expected score at a node, whose value is for the side that just
-  // moved into it; ply is the node's.
-  auto white_score = [&](const Node* node, int ply) {
-    const double wl = std::clamp<double>(
-        node->GetWL() / std::pow(discount, std::max(0.0f, node->GetM())), -1.0,
-        1.0);
-    return (1.0 + (ply % 2 == 1 ? wl : -wl)) / 2;
+  // The moves shown at a node, the main line first: this engine's is the one
+  // it plays (at the root) or the most searched; the opponent's are the most
+  // likely ones, each its own variation. None ends the line there. ply: the
+  // game's half-move count at the node, odd when Black is to move.
+  auto shown = [&](const Node* node, int depth, int ply) {
+    // The opponent's replies with enough visits, or likely enough: one the
+    // closer look made likely late may have few visits yet (see
+    // OpponentDeepTactics), and is shown even if never searched.
+    constexpr float kShownProbability = 0.05f;
+    const bool opponent = opponent_at(depth);
+    std::vector<EdgeAndNode> moves;
+    bool searched = false;
+    if (depth <= max_depth) {
+      for (const auto& edge : node->Edges()) {
+        if (edge.GetN() >= min_visits ||
+            (opponent && edge.GetP() >= kShownProbability)) {
+          moves.push_back(edge);
+          searched |= edge.GetN() > 0;
+        }
+      }
+    }
+    if (!searched) moves.clear();
+    if (moves.empty()) return moves;
+    // This engine's moves by visits, the opponent's by probability, with the
+    // most likely searched one first, as the main line.
+    std::stable_sort(moves.begin(), moves.end(),
+                     [&](const EdgeAndNode& a, const EdgeAndNode& b) {
+                       return opponent ? a.GetP() > b.GetP()
+                                       : a.GetN() > b.GetN();
+                     });
+    if (opponent) {
+      const auto first_searched =
+          std::find_if(moves.begin(), moves.end(),
+                       [](const EdgeAndNode& e) { return e.GetN() > 0; });
+      std::rotate(moves.begin(), first_searched, first_searched + 1);
+    }
+    if (!opponent) {
+      if (node == root_node_) {
+        const bool black = ply % 2 == 1;
+        for (auto& edge : moves) {
+          if (edge.GetMove(black) == final_bestmove_) std::swap(edge, moves[0]);
+        }
+      }
+      moves.resize(1);
+    } else if (moves.size() > width) {
+      moves.resize(width);
+    }
+    return moves;
   };
-  // This engine's moves are the one it plays (at the root) or the most
-  // searched; the opponent's are the most searched ones, each line its own
-  // variation, with the opponent model's probability. Each line ends with
-  // White's expected score. ply: the game's half-move count at the node, odd
-  // when Black is to move.
+  // The main network's own evaluation of a position, without the opponent
+  // model or the search, from the cache, in centipawns for White (Lc0's
+  // "centipawn" score); the result if the game is over. Empty if not cached.
+  auto evaluation = [&](const Node* node, int ply) -> std::string {
+    double wl;  // For White.
+    if (node->IsTerminal()) {
+      // The node's value is for the side that just moved into it.
+      wl = ply % 2 == 1 ? node->GetWL() : -node->GetWL();
+      return wl > 0 ? "1-0" : wl < 0 ? "0-1" : "1/2-1/2";
+    }
+    const PositionHistory history = GetPositionHistoryAtNode(node);
+    const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(
+        EvalPosition{history.GetPositions(), {}, EngineToMove(history)});
+    if (!eval) return "";
+    // The network's value is for the side to move.
+    wl = std::clamp<double>(ply % 2 == 1 ? -eval->q : eval->q, -1.0, 1.0);
+    const long cp = std::lround(90 * std::tan(1.5637541897 * wl));
+    return (cp > 0 ? "+" : "") + std::to_string(cp);
+  };
+  // Each move has one comment, since a GUI shows only one: the opponent
+  // model's probability for the opponent's moves, and Lc0's evaluation at the
+  // end of a line.
   std::function<void(const Node*, int, int, bool)> write =
       [&](const Node* node, int depth, int ply, bool need_number) {
-        // The opponent's replies with enough visits, or likely enough: one the
-        // closer look made likely late may have few visits yet (see
-        // OpponentDeepTactics), and is shown even if never searched.
-        constexpr float kShownProbability = 0.05f;
+        const std::vector<EdgeAndNode> moves = shown(node, depth, ply);
+        if (moves.empty()) return;
         const bool opponent = opponent_at(depth);
-        std::vector<EdgeAndNode> moves;
-        bool searched = false;
-        if (depth <= max_depth) {
-          for (const auto& edge : node->Edges()) {
-            if (edge.GetN() >= min_visits ||
-                (opponent && edge.GetP() >= kShownProbability)) {
-              moves.push_back(edge);
-              searched |= edge.GetN() > 0;
-            }
-          }
-        }
-        if (!searched) moves.clear();
-        if (moves.empty()) {
-          // Scores are for the side this engine plays, the root's side to
-          // move. Also the main network's own evaluation of the position,
-          // without the opponent model or the search, from the cache.
-          auto ours = [&](double white) { return root_black ? 1.0 - white : white; };
-          std::string own;
-          if (node->IsTerminal()) {
-            own = ", Lc0 " + percent(ours(white_score(node, ply)));
-          } else {
-            const PositionHistory history = GetPositionHistoryAtNode(node);
-            const std::optional<EvalResult> eval = backend_->GetCachedEvaluation(EvalPosition{
-                history.GetPositions(), {}, EngineToMove(history)});
-            if (eval) {
-              // The network's value is for the side to move.
-              const double q = ply % 2 == 1 ? -eval->q : eval->q;
-              own = ", Lc0 " + percent(ours((1.0 + q) / 2));
-            }
-          }
-          add(std::string("{") + (root_black ? "Black " : "White ") +
-              percent(ours(white_score(node, ply))) + own + "}");
-          return;
-        }
         const bool black = ply % 2 == 1;
-        // This engine's moves by visits, the opponent's by probability, with
-        // the most likely searched one first, as the main line.
-        std::stable_sort(moves.begin(), moves.end(),
-                         [&](const EdgeAndNode& a, const EdgeAndNode& b) {
-                           return opponent ? a.GetP() > b.GetP()
-                                           : a.GetN() > b.GetN();
-                         });
-        if (opponent) {
-          const auto first_searched = std::find_if(
-              moves.begin(), moves.end(),
-              [](const EdgeAndNode& e) { return e.GetN() > 0; });
-          std::rotate(moves.begin(), first_searched, first_searched + 1);
-        }
-        if (!opponent) {
-          if (node == root_node_) {
-            for (auto& edge : moves) {
-              if (edge.GetMove(black) == final_bestmove_) std::swap(edge, moves[0]);
-            }
-          }
-          moves.resize(1);
-        } else if (moves.size() > width) {
-          moves.resize(width);
-        }
         auto emit = [&](const EdgeAndNode& edge, bool number) {
           if (number || !black) {
             add(std::to_string(ply / 2 + 1) + (black ? "..." : "."));
           }
           add(san.San(to_tactics_move(edge.GetMove(black))));
-          if (opponent) add("{" + percent(edge.GetP()) + "}");
+          std::string comment = opponent ? percent(edge.GetP()) : "";
+          auto append = [&](const std::string& note) {
+            if (note.empty()) return;
+            comment += (comment.empty() ? "" : ", ") + note;
+          };
+          if (edge.GetN() == 0) {
+            append("not searched yet");
+          } else if (shown(edge.node(), depth + 1, ply + 1).empty()) {
+            append(evaluation(edge.node(), ply + 1));
+          }
+          if (!comment.empty()) add("{" + comment + "}");
         };
         const EdgeAndNode& main = moves[0];
         emit(main, need_number);
         for (size_t i = 1; i < moves.size(); ++i) {
           add("(");
           emit(moves[i], true);
-          if (moves[i].GetN() == 0) {
-            add("{not searched yet}");
-          } else {
+          if (moves[i].GetN() > 0) {
             san.Push(to_tactics_move(moves[i].GetMove(black)));
             write(moves[i].node(), depth + 1, ply + 1, false);
             san.Pop();

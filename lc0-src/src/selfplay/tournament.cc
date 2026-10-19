@@ -32,6 +32,7 @@
 #include "chess/pgn.h"
 #include "neural/memcache.h"
 #include "neural/shared_params.h"
+#include "neural/split_heads.h"
 #include "search/classic/opponent_model.h"
 #include "search/classic/search.h"
 #include "search/classic/stoppers/factory.h"
@@ -147,6 +148,7 @@ void SelfPlayTournament::PopulateOptions(OptionsParser* options) {
   options->Add<StringOption>(kSyzygyTablebaseId);
   options->Add<BoolOption>(kOpponentPlayerId) = false;
   classic::PopulateOpponentModelOptions(options);
+  PopulateSplitHeadsOptions(options);
   SelfPlayGame::PopulateUciParams(options);
 
   auto defaults = options->GetMutableDefaultsOptions();
@@ -259,7 +261,8 @@ SelfPlayTournament::SelfPlayTournament(const OptionsDict& options,
       }
       if (!backends_[name_idx][color_idx]) {
         backends_[name_idx][color_idx] =
-            CreateMemCache(BackendManager::Get()->CreateFromParams(opts),
+            CreateMemCache(MaybeSplitHeads(
+                               BackendManager::Get()->CreateFromParams(opts), opts),
                            options.GetSubdict(name));
         backend_list.emplace_back(backends_[name_idx][color_idx]);
       }
