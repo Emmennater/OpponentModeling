@@ -1,4 +1,4 @@
-# Opponent Modeling Using Stockfish
+# Opponent Modeling Using Maia
 The problem with modern chess engines is that they assume the opponent will always play the best move. The goal of this project is to create an engine that doesn't assume that the opponent will always play the best move. We need to identify moves our opponent are likely to make and exploit them by maximizing an expected score.
 
 The project has two engines:
