@@ -65,6 +65,9 @@ struct PlayerOptions {
   // this opponent model's probabilities (see SelfPlayGame::PlayOpponentMove),
   // and `backend` is unused.
   Backend* opponent_backend = nullptr;
+  // Opponent modeling: for a player that searches, the opponent model its
+  // search assumes (OpponentModelWeights), or null for plain Lc0's search.
+  Backend* search_opponent_backend = nullptr;
 };
 
 // Plays a single game vs itself.

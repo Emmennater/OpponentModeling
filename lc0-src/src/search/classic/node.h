@@ -591,18 +591,16 @@ class VisitedNode_Iterator {
 
   // Functions to support iterator interface.
   // Equality comparison operators are inherited from EdgeAndNode.
+  // Opponent modeling: unvisited nodes are skipped, not taken as the end.
+  // Lc0 stopped at the first one with nothing in flight, as the edges are
+  // sorted by policy and visits go to the front of the unvisited ones; but
+  // the closer look (OpponentDeepTactics) changes the probabilities at
+  // opponent nodes without sorting the edges again, and the root's noise
+  // those of a reused root, so a visited node can follow an unvisited one.
   void operator++() {
     if (solid_) {
       while (++current_idx_ != total_count_ &&
              node_ptr_[current_idx_].GetN() == 0) {
-        if (node_ptr_[current_idx_].GetNInFlight() == 0) {
-          // Once there is not even n in flight, we can skip to the end. This is
-          // due to policy being in sorted order meaning that additional n in
-          // flight are always selected from the front of the section with no n
-          // in flight or visited.
-          current_idx_ = total_count_;
-          break;
-        }
       }
       if (current_idx_ == total_count_) {
         node_ptr_ = nullptr;
@@ -610,15 +608,6 @@ class VisitedNode_Iterator {
     } else {
       do {
         node_ptr_ = node_ptr_->sibling_.get();
-        // If n started is 0, can jump direct to end due to sorted policy
-        // ensuring that each time a new edge becomes best for the first time,
-        // it is always the first of the section at the end that has NStarted of
-        // 0.
-        if (node_ptr_ != nullptr && node_ptr_->GetN() == 0 &&
-            node_ptr_->GetNInFlight() == 0) {
-          node_ptr_ = nullptr;
-          break;
-        }
       } while (node_ptr_ != nullptr && node_ptr_->GetN() == 0);
     }
   }

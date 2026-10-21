@@ -643,6 +643,13 @@ const OptionId SearchParams::kOpponentDeepTacticsThreadsId{
     "opponent-deep-tactics-threads", "OpponentDeepTacticsThreads",
     "With OpponentDeepTactics, how many Stockfish processes, each on one CPU "
     "thread, do the closer look."};
+const OptionId SearchParams::kOpponentDeepTacticsWaitId{
+    "opponent-deep-tactics-wait", "OpponentDeepTacticsWait",
+    "With OpponentDeepTactics, the search waits for the closer look at the "
+    "positions it has queued before searching on, so that the shifted "
+    "probabilities guide the rest of the search. A long search hardly needs "
+    "it, as Stockfish keeps up; a short one, as in self-play, would end "
+    "before most of its closer looks arrive."};
 const OptionId SearchParams::kOpponentStockfishPathId{
     "opponent-stockfish-path", "OpponentStockfishPath",
     "With OpponentDeepTactics, the Stockfish executable (any UCI engine with "
@@ -814,6 +821,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kOpponentDeepTacticsVisitsId, 1, 100000000) = 500;
   options->Add<IntOption>(kOpponentDeepTacticsDepthId, 1, 30) = 10;
   options->Add<IntOption>(kOpponentDeepTacticsThreadsId, 1, 64) = 8;
+  options->Add<BoolOption>(kOpponentDeepTacticsWaitId) = false;
   options->Add<StringOption>(kOpponentStockfishPathId) = "";
   options->Add<IntOption>(kOpponentWideCandidatesId, 0, 64) = 0;
   options->Add<FloatOption>(kOpponentWideShareId, 0.0f, 1.0f) = 0.25f;
@@ -934,6 +942,7 @@ SearchParams::SearchParams(const OptionsDict& options)
       kOpponentDeepTacticsDepth(options.Get<int>(kOpponentDeepTacticsDepthId)),
       kOpponentDeepTacticsThreads(
           options.Get<int>(kOpponentDeepTacticsThreadsId)),
+      kOpponentDeepTacticsWait(options.Get<bool>(kOpponentDeepTacticsWaitId)),
       kOpponentWideCandidates(options.Get<int>(kOpponentWideCandidatesId)),
       kOpponentWideShare(options.Get<float>(kOpponentWideShareId)),
       kOpponentWideVisits(options.Get<int>(kOpponentWideVisitsId)),

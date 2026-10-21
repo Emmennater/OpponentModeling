@@ -10,9 +10,11 @@ An engine's policy-net and moves-left-net take those heads from other
 networks (Lc0's PolicyWeights and MovesLeftWeights), to test which of a
 network's heads matter.
 
-Note that self-play's engine searches as plain Lc0: the opponent model only
-picks the opponent's moves, so the search's opponent-model options
-(OpponentCaution and the like) have no effect here and are refused.
+An engine searches as plain Lc0 by default, the opponent model only picking
+the opponent's moves, so the search's opponent-model options (OpponentCaution
+and the like) have no effect and are refused; with `search: om` it searches
+with the opponent model as in real games, from generate_games.py's
+ENGINE_OM, and they apply.
 
 Each pairing's games go to training/data/matches/<config>/<engine>-vs-<opponent>/,
 as in generate_games.py (games.tsv, the training data and lc0.log), with its
@@ -45,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 MATCHES = gg.DATA / "matches"
 TOP_KEYS = {"games", "parallelism", "engine", "engines", "opponent", "opponents"}
 HEAD_NETS = {"policy-net": "policy-weights", "moves-left-net": "moves-left-weights"}
-ENGINE_KEYS = {"net", *HEAD_NETS, "visits", "greedy"}  # the rest of an engine's keys are Lc0 settings
+ENGINE_KEYS = {"net", *HEAD_NETS, "visits", "greedy", "search"}  # the rest of an engine's keys are Lc0 settings
 NAME = re.compile(r"[A-Za-z0-9._+-]+")
 
 
@@ -79,7 +81,10 @@ def load_config(path):
 
     engines = {}
     for name, own in config["engines"].items():
-        merged = {"visits": gg.VISITS, "greedy": True, **(config.get("engine") or {}), **(own or {})}
+        merged = {"visits": gg.VISITS, "greedy": True, "search": "plain",
+                  **(config.get("engine") or {}), **(own or {})}
+        if merged["search"] not in ("plain", "om"):
+            sys.exit(f"{path}: engine {name}: search must be plain or om")
         if "net" not in merged:
             sys.exit(f"{path}: engine {name} has no net")
         net = resolve(path, f"engine {name}'s network", merged["net"])
@@ -94,11 +99,12 @@ def load_config(path):
             if gg.uses_identity_plane(head_net) and not gg.uses_identity_plane(net):
                 settings["player1.identity-plane"] = "true"
         ignored = [k for k in settings if k.startswith("opponent-")]
-        if ignored:
+        if ignored and merged["search"] == "plain":
             sys.exit(f"{path}: engine {name}: {', '.join(ignored)} would do nothing, since self-play's "
-                     f"engine searches without the opponent model; set opponents' settings under opponent(s)")
+                     f"engine searches without the opponent model (unless search: om); set opponents' "
+                     f"settings under opponent(s)")
         engines[name] = {"net": str(net), "visits": int(merged["visits"]),
-                         "greedy": bool(merged["greedy"]), "settings": settings}
+                         "greedy": bool(merged["greedy"]), "search": merged["search"], "settings": settings}
     opponents = {name: {k: flag_value(v) for k, v in {**(config.get("opponent") or {}), **(own or {})}.items()}
                  for name, own in config["opponents"].items()}
     return {"games": int(config.get("games", gg.EVAL_GAMES)),
@@ -109,9 +115,12 @@ def load_config(path):
 def recorded(engine, opponent):
     """What settings.json keeps of a pairing: all its settings, defaults
     included, so that a change to generate_games.py's counts too."""
-    data = {**engine, "engine settings": {**gg.ENGINE, **engine["settings"]},
+    base = gg.ENGINE_OM if engine["search"] == "om" else gg.ENGINE
+    data = {**engine, "engine settings": {**base, **engine["settings"]},
             "opponent settings": {**gg.OPPONENT, **opponent}}
     del data["settings"]
+    if data["search"] == "plain":
+        del data["search"]  # as recorded before engines could search with the model
     return json.loads(json.dumps(data, default=str))
 
 
@@ -175,7 +184,8 @@ def report(config_path, config):
         heads = [f"{gg.net_name(settings.pop(option))}'s {key.removesuffix('-net').replace('-', ' ')}"
                  for key, option in HEAD_NETS.items() if option in settings]
         net = gg.net_name(e["net"]) + (f" with {' and '.join(heads)}" if heads else "")
-        lines.append(f"  {name}: {net}, {e['visits']} visits, "
+        search = ", opponent-model search" if e["search"] == "om" else ""
+        lines.append(f"  {name}: {net}, {e['visits']} visits{search}, "
                      f"{'greedy' if e['greedy'] else 'exploring'}; {describe(settings)}")
     width = max(len("Engine"), *(len(n) for n in config["engines"]))
     for opponent, settings in config["opponents"].items():
@@ -223,7 +233,7 @@ def main():
             print(f"\n[{i}/{len(pairings)}] {engine_name} against {opponent_name}")
             status = gg.generate(folder, engine["net"], config["games"], config["parallelism"],
                                  greedy=engine["greedy"], overrides=engine["settings"], opponent=opponent,
-                                 visits=engine["visits"], summary=False)
+                                 visits=engine["visits"], summary=False, search=engine["search"])
             if status != "done":
                 return
         print()

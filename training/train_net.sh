@@ -24,10 +24,16 @@
 # START the network to train from, and TAG names the result net<N>-<TAG>, to
 # keep it apart from net<N>.
 #
+# SEARCH=om trains the opponent-model branch (generate_games.py --search om):
+# net<N>-om, from the network that played gen<N>-om (net<N-1>-om, or
+# net<N-1> for the branch's first generation), on gen<K>-om in place of
+# gen<K> wherever the branch has it.
+#
 # Usage, from Windows (after setup_wsl.sh), with the steps and learning rate
 # to train with:
 #     wsl -d Ubuntu -- bash training/train_net.sh 1 400 0.0001
 #     wsl -d Ubuntu -- env WINDOW=5000 TAG=newest bash training/train_net.sh 2 400 0.0001
+#     wsl -d Ubuntu -- env SEARCH=om bash training/train_net.sh 10 400 0.0001
 
 set -euo pipefail
 
@@ -37,16 +43,23 @@ LR=${3:-0.0001}
 TEST_STEPS=50
 WINDOW=${WINDOW:-}
 TAG=${TAG:-}
+case "${SEARCH:-plain}" in
+  plain) BRANCH="" ;;
+  om) BRANCH="-om" ;;
+  *) echo "SEARCH must be plain or om"; exit 1 ;;
+esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="$HOME/.venvs/lc0-training/bin/python"
-NAME=$(printf 'net%02d' "$GENERATION")${TAG:+-$TAG}
+NAME=$(printf 'net%02d' "$GENERATION")$BRANCH${TAG:+-$TAG}
 if [ -n "${START:-}" ]; then
   START="$(cd "$(dirname "$START")" && pwd)/$(basename "$START")"
 elif [ "$GENERATION" -eq 1 ]; then
   START="$HERE/../lc0/bin/791556.pb.gz"
 else
   START="$HERE/nets/$(printf 'net%02d' $((GENERATION - 1))).pb.gz"
+  BRANCH_START="${START%.pb.gz}$BRANCH.pb.gz"
+  if [ -n "$BRANCH" ] && [ -f "$BRANCH_START" ]; then START="$BRANCH_START"; fi
 fi
 RUN="$HERE/runs/$NAME"
 export TF_CPP_MIN_LOG_LEVEL=2  # TensorFlow's start-up messages under WSL are noise
@@ -68,6 +81,7 @@ if ! finished; then
   mkdir -p "$RUN/data"
   for dir in "$HERE"/data/gen[0-9][0-9]; do
     if [ "$((10#${dir##*gen}))" -le "$GENERATION" ]; then
+      if [ -n "$BRANCH" ] && [ -d "$dir$BRANCH" ]; then dir="$dir$BRANCH"; fi
       ln -s "$dir" "$RUN/data/$(basename "$dir")"
     fi
   done

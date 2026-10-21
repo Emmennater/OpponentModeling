@@ -269,7 +269,8 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
           *tree_[idx], options_[idx].backend, std::move(responder),
           /* searchmoves */ MoveList(), std::chrono::steady_clock::now(),
           std::move(stoppers), /* infinite */ false, /* ponder */ false,
-          *options_[idx].uci_options, syzygy_tb);
+          *options_[idx].uci_options, syzygy_tb,
+          options_[idx].search_opponent_backend);
     }
 
     // Do search.

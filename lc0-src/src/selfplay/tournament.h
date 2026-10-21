@@ -103,6 +103,10 @@ class SelfPlayTournament {
   // options its backend reads.
   std::unique_ptr<OptionsDict> opponent_backend_options_[2];
   std::unique_ptr<Backend> opponent_backends_[2];
+  // The opponent model a searching player's search assumes, when its
+  // OpponentModelWeights are set, and the options its backend reads.
+  std::unique_ptr<OptionsDict> search_opponent_backend_options_[2];
+  std::unique_ptr<Backend> search_opponent_backends_[2];
 
   UciResponder* uci_responder_;
   GameInfo::Callback game_callback_;

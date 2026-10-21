@@ -174,9 +174,15 @@ class Search {
   };
   void QueueDeepTactics(const Node* node) REQUIRES(nodes_mutex_);
   void DeepTacticsThread();
+  // With OpponentDeepTacticsWait, a worker waits after each batch until the
+  // closer look at every queued position is done, the search stops or
+  // Stockfish fails.
+  void WaitForDeepTactics();
   std::mutex deep_mutex_;
   std::condition_variable deep_cv_;
   std::deque<DeepTacticsRequest> deep_queue_;
+  int deep_pending_ = 0;  // Queued or being scored; guarded by deep_mutex_.
+  std::condition_variable deep_idle_cv_;  // Notified as requests are done.
   std::atomic<int> deep_done_{0};
   std::atomic<int64_t> deep_ms_{0};
   std::atomic<bool> deep_failed_{false};  // Stockfish could not be started.
@@ -203,6 +209,10 @@ class Search {
   std::vector<std::thread> threads_ GUARDED_BY(threads_mutex_);
 
   Node* root_node_;
+  // Whether the root's edges may be out of policy order: a reused root gets
+  // its noise after its edges were sorted, and they can't be sorted again
+  // once they have nodes.
+  bool root_unsorted_ = false;
   SyzygyTablebase* syzygy_tb_;
   // Fixed positions which happened before the search.
   const PositionHistory& played_history_;

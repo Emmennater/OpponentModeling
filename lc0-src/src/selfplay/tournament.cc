@@ -227,10 +227,15 @@ SelfPlayTournament::SelfPlayTournament(const OptionsDict& options,
   static constexpr const char* kPlayerColors[2] = {"white", "black"};
 
   // Opponent modeling: an opponent player's model, instead of a network to
-  // search with.
+  // search with; or, for a player that searches, the model its search
+  // assumes, as in UCI play.
   for (int name_idx : {0, 1}) {
     const auto& opts = options.GetSubdict(kPlayerNames[name_idx]);
-    if (!opts.Get<bool>(kOpponentPlayerId)) continue;
+    if (!opts.Get<bool>(kOpponentPlayerId)) {
+      search_opponent_backends_[name_idx] = classic::CreateOpponentModelBackend(
+          opts, &search_opponent_backend_options_[name_idx]);
+      continue;
+    }
     opponent_backends_[name_idx] = classic::CreateOpponentModelBackend(
         opts, &opponent_backend_options_[name_idx]);
     if (!opponent_backends_[name_idx]) {
@@ -350,6 +355,7 @@ void SelfPlayTournament::PlayOneGame(int game_number) {
     opt.uci_options = &player_options_[pl_idx][color];
     opt.search_limits = search_limits_[pl_idx][color];
     opt.opponent_backend = opponent_backends_[pl_idx].get();
+    opt.search_opponent_backend = search_opponent_backends_[pl_idx].get();
 
     // "bestmove" callback.
     opt.best_move_callback = [this, game_number, pl_idx, player1_black,

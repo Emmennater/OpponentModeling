@@ -152,6 +152,27 @@ class MEvaluator {
 
 }  // namespace
 
+namespace {
+void ApplyDirichletNoise(Node* node, float eps, double alpha) {
+  float total = 0;
+  std::vector<float> noise;
+
+  for (int i = 0; i < node->GetNumEdges(); ++i) {
+    float eta = Random::Get().GetGamma(alpha, 1.0);
+    noise.emplace_back(eta);
+    total += eta;
+  }
+
+  if (total < std::numeric_limits<float>::min()) return;
+
+  int noise_idx = 0;
+  for (const auto& child : node->Edges()) {
+    auto* edge = child.edge();
+    edge->SetP(edge->GetP() * (1 - eps) + eps * noise[noise_idx++] / total);
+  }
+}
+}  // namespace
+
 Search::Search(const NodeTree& tree, Backend* backend,
                std::unique_ptr<UciResponder> uci_responder,
                const MoveList& searchmoves,
@@ -179,6 +200,13 @@ Search::Search(const NodeTree& tree, Backend* backend,
     pending_searchers_.store(params_.GetMaxConcurrentSearchers(),
                              std::memory_order_release);
   }
+  // A root kept from the previous search (self-play's ReuseTree) was expanded
+  // without the root's noise, which it gets here.
+  if (params_.GetNoiseEpsilon() && root_node_->HasChildren()) {
+    ApplyDirichletNoise(root_node_, params_.GetNoiseEpsilon(),
+                        params_.GetNoiseAlpha());
+    root_unsorted_ = true;
+  }
   contempt_mode_ = params_.GetContemptMode();
   // Make sure the contempt mode is never "play" beyond this point.
   if (contempt_mode_ == ContemptMode::PLAY) {
@@ -201,27 +229,6 @@ Search::Search(const NodeTree& tree, Backend* backend,
     }
   }
 }
-
-namespace {
-void ApplyDirichletNoise(Node* node, float eps, double alpha) {
-  float total = 0;
-  std::vector<float> noise;
-
-  for (int i = 0; i < node->GetNumEdges(); ++i) {
-    float eta = Random::Get().GetGamma(alpha, 1.0);
-    noise.emplace_back(eta);
-    total += eta;
-  }
-
-  if (total < std::numeric_limits<float>::min()) return;
-
-  int noise_idx = 0;
-  for (const auto& child : node->Edges()) {
-    auto* edge = child.edge();
-    edge->SetP(edge->GetP() * (1 - eps) + eps * noise[noise_idx++] / total);
-  }
-}
-}  // namespace
 
 namespace {
 // WDL conversion formula based on random walk model.
@@ -899,8 +906,8 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
       std::vector<ThinkingInfo> infos(1);
       infos[0].comment =
           deep_failed_.load(std::memory_order_relaxed)
-              ? "deep tactics: Stockfish could not be started; set "
-                "OpponentStockfishPath"
+              ? "deep tactics: Stockfish could not be started or stopped "
+                "working; check OpponentStockfishPath"
               :
           "deep tactics: " + std::to_string(done) + " positions, " +
           std::to_string(done ? deep_ms_.load(std::memory_order_relaxed) / done
@@ -1372,8 +1379,17 @@ void Search::QueueDeepTactics(const Node* node) REQUIRES(nodes_mutex_) {
   {
     std::lock_guard<std::mutex> lock(deep_mutex_);
     deep_queue_.push_back(std::move(request));
+    ++deep_pending_;
   }
   deep_cv_.notify_one();
+}
+
+void Search::WaitForDeepTactics() {
+  std::unique_lock<std::mutex> lock(deep_mutex_);
+  while (deep_pending_ > 0 && !stop_.load(std::memory_order_acquire) &&
+         !deep_failed_.load(std::memory_order_relaxed)) {
+    deep_idle_cv_.wait_for(lock, std::chrono::milliseconds(20));
+  }
 }
 
 void Search::DeepTacticsThread() {
@@ -1401,11 +1417,24 @@ void Search::DeepTacticsThread() {
       request = std::move(deep_queue_.front());
       deep_queue_.pop_front();
     }
+    // The request is done however this iteration ends, after the node lock
+    // below is released (see WaitForDeepTactics).
+    struct Done {
+      Search* search;
+      ~Done() {
+        {
+          std::lock_guard<std::mutex> lock(search->deep_mutex_);
+          --search->deep_pending_;
+        }
+        search->deep_idle_cv_.notify_all();
+      }
+    } done{this};
     const auto start = std::chrono::steady_clock::now();
     const std::optional<std::vector<int>> result =
         stockfish->Score(request.fen, request.moves, depth, kMaxMs);
     if (!result) {
       LOGFILE << "OpponentDeepTactics: Stockfish stopped working.";
+      deep_failed_.store(true, std::memory_order_relaxed);
       stockfish.reset();
       break;
     }
@@ -1788,6 +1817,13 @@ void SearchWorker::ExecuteOneIteration() {
 
   // 6. Propagate the new nodes' information to all their parents in the tree.
   DoBackupUpdate();
+
+  // Opponent modeling: the closer look at the positions this batch queued,
+  // before the search goes on (see OpponentDeepTacticsWait).
+  if (search_->opponent_backend_ && params_.GetOpponentDeepTactics() > 0.0f &&
+      params_.GetOpponentDeepTacticsWait()) {
+    search_->WaitForDeepTactics();
+  }
 
   // 7. Update the Search's status and progress information.
   UpdateCounters();
@@ -2284,8 +2320,18 @@ void SearchWorker::PickNodesToExtendTask(
         search_->UpdateRootHalving();
         root_halving = search_->UsesRootHalving();
       }
+      // Opponent modeling: the limit relies on the edges being in policy
+      // order, which they may not be at a reused root with noise or at an
+      // opponent node after the closer look (see VisitedNode_Iterator), so
+      // all the edges are read there.
+      const bool unsorted =
+          (is_root_node && search_->root_unsorted_) ||
+          (search_->opponent_backend_ &&
+           params_.GetOpponentDeepTactics() > 0.0f &&
+           OpponentModelAt(static_cast<int>(current_path.size()) + base_depth));
       int max_needed = node->GetNumEdges();
-      if (!is_root_node || (root_move_filter.empty() && !root_halving)) {
+      if (!unsorted &&
+          (!is_root_node || (root_move_filter.empty() && !root_halving))) {
         max_needed = std::min(max_needed, node->GetNStarted() + cur_limit + 2);
       }
       node->CopyPolicy(max_needed, current_pol.data());
@@ -2525,7 +2571,7 @@ void SearchWorker::PickNodesToExtendTask(
             second_best_edge = cur_iters[idx];
           }
           if (can_exit) break;
-          if (nstarted == 0) {
+          if (nstarted == 0 && !unsorted) {
             // One more loop will get 2 unvisited nodes, which is sufficient to
             // ensure second best is correct. This relies upon the fact that
             // edges are sorted in policy decreasing order.

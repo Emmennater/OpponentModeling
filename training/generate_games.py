@@ -41,6 +41,12 @@ by two. A rerun continues until the generation has --games games; an
 interrupted run loses only the games in progress, whose partly written files
 are removed on the next start.
 
+--search om plays with the opponent model in the engine's search, as in
+real games (ENGINE_OM: the playing settings, with ENGINE's exploration), in
+a branch of its own: generation N in gen<N>-om/, from generation OM_FIRST,
+played by net09 and then by net<N-1>-om, which train_net.sh trains with
+SEARCH=om; evaluations go to eval/<network>-om/ (-greedy-om with --greedy).
+
 --eval plays --net's games in training/data/eval/<network>/ instead, apart
 from the generations and their training data, to measure a network; with
 --greedy, in eval/<network>-greedy/, the engine plays as in real games,
@@ -57,6 +63,7 @@ hour on an RTX 4080 at the default parallelism of 16, the fastest of 8 to
     .venv\\Scripts\\python training\\generate_games.py --eval --net training\\nets\\net01.pb.gz
     .venv\\Scripts\\python training\\generate_games.py --report
     .venv\\Scripts\\python training\\generate_games.py --generation 1 --pgn gen01.pgn
+    .venv\\Scripts\\python training\\generate_games.py --generation 10 --search om
 """
 
 import argparse
@@ -100,6 +107,37 @@ ENGINE = {
     "moves-left-constant-factor": 0.0, "task-workers": 0,
     "smart-pruning-factor": 0.0,
 }
+# The engine's search with the opponent model (--search om): the playing
+# settings (En Croissant, 2026-10-20), but at VISITS visits, with ENGINE's
+# exploration and no resigning. Where self-play's defaults differ from UCI's
+# (tournament.cc), UCI's are set, so that the search is as in play. The
+# closer look comes at 10 visits (200 in play, at 500,000 nodes), and the
+# search waits for it (opponent-deep-tactics-wait): an 800-visit search ends
+# before most of its closer looks would arrive. Each game's search has 2
+# Stockfish processes for it. The tree is reused between moves: the visits
+# kept count towards VISITS, and the root gets its noise all the same.
+ENGINE_OM = {
+    "resign-percentage": 0, "temperature": 0.9, "temp-endgame": 0,
+    "tempdecay-moves": 60, "tempdecay-delay-moves": 20, "temp-cutoff-move": 40,
+    "temp-visit-offset": -0.8, "noise-epsilon": 0.1, "noise-alpha": 0.12,
+    "cpuct-factor": 3.894, "fpu-value": 0.33, "two-fold-draws": "true",
+    "sticky-endgames": "true",
+    "cpuct": 2.5, "policy-softmax-temp": 1.359, "smart-pruning-factor": 0,
+    "moves-left-max-effect": 0.5, "moves-left-threshold": 0, "moves-left-slope": 0.01,
+    "moves-left-scaled-factor": 0.15, "moves-left-quadratic-factor": 0.85,
+    "opponent-model-weights": MAIA, "opponent-model-rating": 1500,
+    "opponent-model-own-rating": 1500, "opponent-model-temperature": 1,
+    "opponent-root-candidates": 0, "opponent-best-lean": 1, "opponent-discount": 1,
+    "opponent-min-probability": 0, "opponent-tactics": 0, "opponent-engine-mix": 0,
+    "opponent-caution": 0.1, "opponent-refutation-probability": 0.05,
+    "opponent-caution-ahead": 0.4, "opponent-horizon": 0,
+    "opponent-wide-visits": 10000, "opponent-wide-share": 0.5,
+    "opponent-deep-tactics": 1.0, "opponent-deep-tactics-depth": 4,
+    "opponent-stockfish-floor": "true", "opponent-stockfish-path": STOCKFISH,
+    "opponent-deep-tactics-visits": 10, "opponent-deep-tactics-wait": "true",
+    "opponent-deep-tactics-threads": 2, "reuse-tree": "true",
+}
+OM_FIRST = 10  # the first generation of --search om, played by net09
 OPPONENT = {
     "opponent-player": "true", "opponent-model-weights": MAIA,
     "opponent-model-rating": 1500, "opponent-model-own-rating": 1500,
@@ -110,14 +148,19 @@ OPPONENT = {
 }
 
 
-def generation_dir(generation):
-    return DATA / f"gen{generation:02d}"
+def generation_dir(generation, search="plain"):
+    return DATA / (f"gen{generation:02d}" + ("-om" if search == "om" else ""))
 
 
-def default_net(generation):
+def default_net(generation, search="plain"):
     """The network that plays a generation: the one trained after the
-    previous generation, or 791556 for the first."""
-    return FIRST_NET if generation == 1 else NETS / f"net{generation - 1:02d}.pb.gz"
+    previous generation, or 791556 for the first; with --search om, from
+    generation OM_FIRST + 1 on, the one trained on the opponent-model
+    branch."""
+    if generation == 1:
+        return FIRST_NET
+    om = search == "om" and generation > OM_FIRST
+    return NETS / (f"net{generation - 1:02d}" + ("-om" if om else "") + ".pb.gz")
 
 
 def read_index(folder):
@@ -180,11 +223,13 @@ def label(folder):
         return f"Evaluation of {folder.name}"
     if folder.parent.parent.name == "matches":
         return f"Match {folder.parent.name}, {folder.name}"
-    return f"Generation {int(folder.name[3:])}"
+    om = folder.name.endswith("-om")
+    return f"Generation {int(folder.name[3:5])}" + (", opponent-model search" if om else "")
 
 
-def eval_dir(net, greedy=False, tag=""):
-    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else "") + (f"-{tag}" if tag else ""))
+def eval_dir(net, greedy=False, tag="", search="plain"):
+    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else "") + ("-om" if search == "om" else "")
+                            + (f"-{tag}" if tag else ""))
 
 
 def uses_identity_plane(net):
@@ -195,10 +240,11 @@ def uses_identity_plane(net):
 
 
 def generate(folder, net, target, parallelism, greedy=False, overrides=None, opponent=None,
-             visits=VISITS, summary=True):
+             visits=VISITS, summary=True, search="plain"):
     """Plays games in `folder` until it has `target`: "done", "stopped"
-    (Ctrl+C) or "failed". `overrides` changes ENGINE's settings, `opponent`
-    OPPONENT's; `summary` prints report() at the end."""
+    (Ctrl+C) or "failed". `overrides` changes ENGINE's settings (ENGINE_OM's
+    with `search` "om"), `opponent` OPPONENT's; `summary` prints report() at
+    the end."""
     net = Path(net).resolve()
     if not net.exists():
         sys.exit(f"{net} does not exist: train it first, or give --net")
@@ -217,7 +263,7 @@ def generate(folder, net, target, parallelism, greedy=False, overrides=None, opp
     while True:
         before = len(read_index(folder))
         status = run_lc0(folder, net, target, parallelism, greedy, overrides or {}, opponent or {},
-                         visits)
+                         visits, search)
         if status != "failed":
             break
         restarts = 0 if len(read_index(folder)) > before else restarts + 1
@@ -230,7 +276,7 @@ def generate(folder, net, target, parallelism, greedy=False, overrides=None, opp
     return status
 
 
-def run_lc0(folder, net, target, parallelism, greedy, overrides, opponent, visits):
+def run_lc0(folder, net, target, parallelism, greedy, overrides, opponent, visits, search):
     """One run of Lc0's self-play towards `target` games in `folder`:
     "done", "stopped" (Ctrl+C) or "failed" (Lc0 stopped by itself)."""
     games = read_index(folder)
@@ -242,13 +288,17 @@ def run_lc0(folder, net, target, parallelism, greedy, overrides, opponent, visit
                f"--parallelism={parallelism}", "--training=true",
                "--backend=multiplexing", "--backend-opts=backend=cuda-fp16",
                f"--weights={net}", f"--player1.visits={visits}"]
-    engine = dict(ENGINE)
+    engine = dict(ENGINE_OM if search == "om" else ENGINE)
     if greedy:
         # No exploration; the temperature from move 40 (temp-endgame) applies
         # even at temperature 0, so it goes too.
         engine.update({"temperature": 0, "temp-endgame": 0, "noise-epsilon": 0})
     engine.update(overrides)
-    command += [f"--{name}={value}" for name, value in engine.items()]
+    # The opponent-model search's settings are player 1's alone: player 2, the
+    # modeled opponent, has its own.
+    prefix = "player1." if search == "om" else ""
+    command += [f"--{name if name.startswith('player') else prefix + name}={value}"
+                for name, value in engine.items()]
     if uses_identity_plane(net):
         command += ["--player1.identity-plane=true"]
     command += [f"--player2.{name}={value}" for name, value in {**OPPONENT, **opponent}.items()]
@@ -296,7 +346,8 @@ def quartiles(values):
 
 
 def report():
-    folders = sorted(DATA.glob("gen[0-9][0-9]")) + sorted(DATA.glob("eval/*"))
+    folders = (sorted(DATA.glob("gen[0-9][0-9]")) + sorted(DATA.glob("gen[0-9][0-9]-om"))
+               + sorted(DATA.glob("eval/*")))
     if not folders:
         print("No games yet")
     for folder in folders:
@@ -338,7 +389,8 @@ def write_pgn(folder, path):
     games = read_index(folder)
     if not games:
         sys.exit(f"{label(folder)} has no games yet")
-    engine = f"Lc0 {net_name((folder / 'net.txt').read_text().strip())} ({VISITS} visits)"
+    search = ", opponent-model search" if folder.name.endswith("-om") else ""
+    engine = f"Lc0 {net_name((folder / 'net.txt').read_text().strip())} ({VISITS} visits{search})"
     opponent = (f"Maia-3 {OPPONENT['opponent-model-rating']} (closer look depth "
                 f"{OPPONENT['opponent-deep-tactics-depth']}, strength {OPPONENT['opponent-deep-tactics']})")
     with open(path, "w") as out:
@@ -372,24 +424,29 @@ def main():
     parser.add_argument("--tag", default="", help="with --eval: a suffix for the folder, for --set")
     parser.add_argument("--greedy", action="store_true",
                         help="with --eval: the engine always plays its best move, as in real games")
+    parser.add_argument("--search", choices=("plain", "om"), default="plain",
+                        help="the engine's search: plain Lc0's, or with the opponent model (see above)")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
     parser.add_argument("--pgn", help="only write the generation's games to this PGN file")
     args = parser.parse_args()
     if args.eval:
         if not args.net:
             sys.exit("--eval needs --net")
-        folder = eval_dir(args.net, args.greedy, args.tag)
+        folder = eval_dir(args.net, args.greedy, args.tag, args.search)
     else:
-        folder = generation_dir(args.generation)
+        if args.search == "om" and args.generation < OM_FIRST:
+            sys.exit(f"--search om starts at generation {OM_FIRST}")
+        folder = generation_dir(args.generation, args.search)
     if args.report:
         report()
     elif args.pgn:
         write_pgn(folder, args.pgn)
     else:
         games = args.games or (EVAL_GAMES if args.eval else GAMES)
-        generate(folder, args.net or default_net(args.generation), games, args.parallelism,
+        generate(folder, args.net or default_net(args.generation, args.search), games, args.parallelism,
                  greedy=args.eval and args.greedy,
-                 overrides=dict(s.split("=", 1) for s in args.set) if args.eval else None)
+                 overrides=dict(s.split("=", 1) for s in args.set) if args.eval else None,
+                 search=args.search)
 
 
 if __name__ == "__main__":

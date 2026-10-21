@@ -22,10 +22,16 @@ play. Every step resumes where it stopped: a rerun picks up the games, the
 evaluations, the training's checkpoints and the finished networks. Ctrl+C
 stops it. --report compares the generations and evaluations so far.
 
+With --search om, the loop runs the opponent-model branch instead
+(generate_games.py --search om): from generation OM_FIRST, the games and
+the evaluations search with the opponent model, and the networks are
+net<N>-om.
+
 Usage (from Windows, with the repository's .venv, after setup_wsl.sh; a
 generation of 5,000 games takes 1.5 to 2.5 hours, its training about 5
 minutes, an evaluation about 5):
     .venv\\Scripts\\python training\\loop.py --generations 10
+    .venv\\Scripts\\python training\\loop.py --generations 12 --search om
 """
 
 import argparse
@@ -64,18 +70,18 @@ def describe(s):
             f"median {s['median']:.0f} half-moves to mate")
 
 
-def evaluate(net, parallelism):
+def evaluate(net, parallelism, search):
     """Plays `net`'s greedy evaluation; False if stopped before the end."""
-    folder = gg.eval_dir(net, greedy=True)
-    gg.generate(folder, net, gg.EVAL_GAMES, parallelism, greedy=True)
+    folder = gg.eval_dir(net, greedy=True, search=search)
+    gg.generate(folder, net, gg.EVAL_GAMES, parallelism, greedy=True, search=search)
     return len(gg.read_index(folder)) >= gg.EVAL_GAMES
 
 
-def check(before_net, now_net):
+def check(before_net, now_net, search):
     """Whether `now_net` is not clearly worse than `before_net` in their
     greedy evaluations; prints the comparison."""
-    before = stats(gg.eval_dir(before_net, greedy=True))
-    now = stats(gg.eval_dir(now_net, greedy=True))
+    before = stats(gg.eval_dir(before_net, greedy=True, search=search))
+    now = stats(gg.eval_dir(now_net, greedy=True, search=search))
     print(f"{gg.net_name(before_net)}, greedy: {describe(before)}")
     print(f"{gg.net_name(now_net)}, greedy: {describe(now)}")
     problems = []
@@ -91,19 +97,23 @@ def check(before_net, now_net):
     return not problems
 
 
-def play(generation, parallelism):
+def play(generation, parallelism, search):
     """Plays generation N; False if stopped before the end."""
-    folder = gg.generation_dir(generation)
-    gg.generate(folder, gg.default_net(generation), gg.GAMES, parallelism)
+    folder = gg.generation_dir(generation, search)
+    gg.generate(folder, gg.default_net(generation, search), gg.GAMES, parallelism, search=search)
     return len(gg.read_index(folder)) >= gg.GAMES
 
 
-def train(generation, steps, lr):
-    net = gg.NETS / f"net{generation:02d}.pb.gz"
+def trained_net(generation, search):
+    return gg.NETS / (f"net{generation:02d}" + ("-om" if search == "om" else "") + ".pb.gz")
+
+
+def train(generation, steps, lr, search):
+    net = trained_net(generation, search)
     if net.exists():
         return True
-    command = ["wsl.exe", "-d", "Ubuntu", "--", "bash", wsl_path(HERE / "train_net.sh"),
-               str(generation), str(steps), str(lr)]
+    command = ["wsl.exe", "-d", "Ubuntu", "--", "env", f"SEARCH={search}", "bash",
+               wsl_path(HERE / "train_net.sh"), str(generation), str(steps), str(lr)]
     try:
         result = subprocess.run(command)
     except KeyboardInterrupt:
@@ -119,27 +129,32 @@ def main():
     parser.add_argument("--steps", type=int, default=STEPS, help="training steps per network")
     parser.add_argument("--lr", type=float, default=LR, help="learning rate")
     parser.add_argument("--no-check", action="store_true", help="go on even if a network looks worse")
+    parser.add_argument("--search", choices=("plain", "om"), default="plain",
+                        help="the engine's search: plain Lc0's, or with the opponent model, from "
+                             f"generation {gg.OM_FIRST} (see generate_games.py)")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
     args = parser.parse_args()
     if args.report:
         gg.report()
         return
-    for generation in range(1, args.generations + 1):
-        if len(gg.read_index(gg.generation_dir(generation))) < gg.GAMES:
+    search = args.search
+    first = gg.OM_FIRST if search == "om" else 1
+    for generation in range(first, args.generations + 1):
+        if len(gg.read_index(gg.generation_dir(generation, search))) < gg.GAMES:
             if generation > 1 and not args.no_check:
-                before, now = gg.default_net(generation - 1), gg.default_net(generation)
-                if not (evaluate(before, args.parallelism) and evaluate(now, args.parallelism)):
+                before, now = gg.default_net(generation - 1, search), gg.default_net(generation, search)
+                if not (evaluate(before, args.parallelism, search) and evaluate(now, args.parallelism, search)):
                     return
-                if not check(before, now):
+                if not check(before, now, search):
                     return
-            if not play(generation, args.parallelism):
+            if not play(generation, args.parallelism, search):
                 return
-        if not train(generation, args.steps, args.lr):
-            print(f"Training net{generation:02d} did not finish; rerun to continue.")
+        if not train(generation, args.steps, args.lr, search):
+            print(f"Training {trained_net(generation, search).name} did not finish; rerun to continue.")
             return
-    last = gg.NETS / f"net{args.generations:02d}.pb.gz"
-    if evaluate(last, args.parallelism):
-        check(gg.default_net(args.generations), last)
+    last = trained_net(args.generations, search)
+    if evaluate(last, args.parallelism, search):
+        check(gg.default_net(args.generations, search), last, search)
     print(f"Generation {args.generations} is done; its games trained {last}.")
 
 
