@@ -1,0 +1,53 @@
+# Does what the -om2 networks learned against Maia-3 1500 carry over to a
+# stronger opponent? For training/match.py: the engines against Maia-3 1800
+# with a stronger closer look (depth 4, strength 1.5; 1500 and strength 1 in
+# training), all searching with the opponent model (ENGINE_OM, greedy).
+#
+# "matched": the search's opponent model is the real opponent, as when the
+# opponent model is set for the player across the board in real games: did
+# training against 1500 make the network better against others too?
+# "1500": the search still assumes the training opponent: how much does the
+# network count on mistakes an 1800 player does not make? Losses matter most
+# here.
+#
+# 791556 is the starting point; net04-om2 where the gains levelled off;
+# net10-om2 the last.
+
+games: 500        # per engine, half with each color: the median half-moves
+                  # to mate is known within about 2
+parallelism: 16
+
+engine:
+  visits: 800
+  greedy: true
+  search: om
+
+engines:
+  791556-matched:
+    net: lc0/bin/791556.pb.gz
+    opponent-model-rating: 1800
+    opponent-model-own-rating: 1800
+    opponent-deep-tactics: 1.5
+  net04-om2-matched:
+    net: training/nets/net04-om2.pb.gz
+    opponent-model-rating: 1800
+    opponent-model-own-rating: 1800
+    opponent-deep-tactics: 1.5
+  net10-om2-matched:
+    net: training/nets/net10-om2.pb.gz
+    opponent-model-rating: 1800
+    opponent-model-own-rating: 1800
+    opponent-deep-tactics: 1.5
+  791556-1500:
+    net: lc0/bin/791556.pb.gz
+  net10-om2-1500:
+    net: training/nets/net10-om2.pb.gz
+
+opponent:
+  opponent-deep-tactics: 1.5
+  opponent-deep-tactics-depth: 4
+
+opponents:
+  maia-1800:
+    opponent-model-rating: 1800
+    opponent-model-own-rating: 1800

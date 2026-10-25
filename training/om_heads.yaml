@@ -1,0 +1,47 @@
+# Superseded: written for the -om branch, whose search used the playing
+# settings' CPuct, FPU, moves left and tree reuse. ENGINE_OM now uses
+# ENGINE's (the -om2 branch), so this no longer plays as net01-om's games and
+# evaluations did.
+#
+# Which of net01-om's heads make it mate Maia later than 791556 with the
+# opponent-model search? For training/match.py: 791556 with each of net01-om's
+# heads in turn (policy-net: Lc0's PolicyWeights, moves-left-net:
+# MovesLeftWeights, each network evaluating with its own body), and net01-om's
+# value alone with 791556's policy and moves left.
+#
+# Both networks as they are were measured by generate_games.py --eval --greedy
+# --search om with the same settings: 791556 mates in a median of 50
+# half-moves, 81% within 60 (eval/791556-greedy-om), net01-om in 52, 73%
+# (eval/net01-om-greedy-om). The head whose swap into 791556 costs those
+# half-moves is the one that got worse.
+
+games: 500        # per engine, half with each color: the median half-moves
+                  # to mate is known within about 2
+parallelism: 16
+
+engine:
+  visits: 800
+  greedy: true
+  search: om
+
+engines:
+  791556+net01-om-policy:
+    net: lc0/bin/791556.pb.gz
+    policy-net: training/nets/net01-om.pb.gz
+  791556+net01-om-ml:
+    net: lc0/bin/791556.pb.gz
+    moves-left-net: training/nets/net01-om.pb.gz
+  net01-om-value:
+    net: training/nets/net01-om.pb.gz
+    policy-net: lc0/bin/791556.pb.gz
+    moves-left-net: lc0/bin/791556.pb.gz
+
+# The generation games' opponent (generate_games.py's OPPONENT).
+opponent:
+  opponent-deep-tactics: 1.0
+  opponent-deep-tactics-depth: 4
+
+opponents:
+  maia-1500:
+    opponent-model-rating: 1500
+    opponent-model-own-rating: 1500

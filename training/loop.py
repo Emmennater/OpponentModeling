@@ -23,15 +23,15 @@ evaluations, the training's checkpoints and the finished networks. Ctrl+C
 stops it. --report compares the generations and evaluations so far.
 
 With --search om, the loop runs the opponent-model branch instead
-(generate_games.py --search om): from generation OM_FIRST, the games and
-the evaluations search with the opponent model, and the networks are
-net<N>-om.
+(generate_games.py --search om), from scratch: the games and the
+evaluations search with the opponent model, and the networks are
+net<N> with generate_games.py's OM_SUFFIX (net<N>-om2).
 
 Usage (from Windows, with the repository's .venv, after setup_wsl.sh; a
 generation of 5,000 games takes 1.5 to 2.5 hours, its training about 5
 minutes, an evaluation about 5):
     .venv\\Scripts\\python training\\loop.py --generations 10
-    .venv\\Scripts\\python training\\loop.py --generations 12 --search om
+    .venv\\Scripts\\python training\\loop.py --generations 10 --search om
 """
 
 import argparse
@@ -105,7 +105,7 @@ def play(generation, parallelism, search):
 
 
 def trained_net(generation, search):
-    return gg.NETS / (f"net{generation:02d}" + ("-om" if search == "om" else "") + ".pb.gz")
+    return gg.NETS / (f"net{generation:02d}" + (gg.OM_SUFFIX if search == "om" else "") + ".pb.gz")
 
 
 def train(generation, steps, lr, search):
@@ -130,16 +130,15 @@ def main():
     parser.add_argument("--lr", type=float, default=LR, help="learning rate")
     parser.add_argument("--no-check", action="store_true", help="go on even if a network looks worse")
     parser.add_argument("--search", choices=("plain", "om"), default="plain",
-                        help="the engine's search: plain Lc0's, or with the opponent model, from "
-                             f"generation {gg.OM_FIRST} (see generate_games.py)")
+                        help="the engine's search: plain Lc0's, or with the opponent model, "
+                             "on a branch of its own (see generate_games.py)")
     parser.add_argument("--report", action="store_true", help="only compare the generations so far")
     args = parser.parse_args()
     if args.report:
         gg.report()
         return
     search = args.search
-    first = gg.OM_FIRST if search == "om" else 1
-    for generation in range(first, args.generations + 1):
+    for generation in range(1, args.generations + 1):
         if len(gg.read_index(gg.generation_dir(generation, search))) < gg.GAMES:
             if generation > 1 and not args.no_check:
                 before, now = gg.default_net(generation - 1, search), gg.default_net(generation, search)

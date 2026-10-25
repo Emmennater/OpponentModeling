@@ -21,10 +21,10 @@ greedily instead of 58 (791556: 58 instead of 59), so the search's choices,
 the policy's targets, follow it.
 
 The opponent (player 2) is Maia-3 with the playing settings' opponent model:
-rating 1500 against 1500, the closer look at depth 4 and strength 2 (an
-upper bound on what a 1500 player sees: tools/calibrate_closer_look.py
-finds Maia-3 alone about as error-prone as such players), and no other
-shifts. Each move is drawn from its probabilities (see OpponentPlayer in
+rating 1500 against 1500, the closer look at depth 4 and strength 1, as
+the engine's search assumes in play (strength 2 until 2026-10-20, an upper
+bound on what a 1500 player sees: tools/calibrate_closer_look.py finds
+Maia-3 alone about as error-prone as such players), and no other shifts. Each move is drawn from its probabilities (see OpponentPlayer in
 lc0-src/src/selfplay/tournament.cc). Games start from the initial position;
 the engine's temperature over its first moves varies its openings, as in
 Lc0's runs.
@@ -42,10 +42,11 @@ interrupted run loses only the games in progress, whose partly written files
 are removed on the next start.
 
 --search om plays with the opponent model in the engine's search, as in
-real games (ENGINE_OM: the playing settings, with ENGINE's exploration), in
-a branch of its own: generation N in gen<N>-om/, from generation OM_FIRST,
-played by net09 and then by net<N-1>-om, which train_net.sh trains with
-SEARCH=om; evaluations go to eval/<network>-om/ (-greedy-om with --greedy).
+real games (ENGINE_OM: ENGINE's settings, with the playing settings' opponent
+model), in a branch of its own, from scratch: generation N in
+gen<N>-om2/ (OM_SUFFIX), played by 791556 and then by net<N-1>-om2, which
+train_net.sh trains with SEARCH=om; evaluations go to
+eval/<network>-om2/ (-greedy-om2 with --greedy).
 
 --eval plays --net's games in training/data/eval/<network>/ instead, apart
 from the generations and their training data, to measure a network; with
@@ -107,60 +108,55 @@ ENGINE = {
     "moves-left-constant-factor": 0.0, "task-workers": 0,
     "smart-pruning-factor": 0.0,
 }
-# The engine's search with the opponent model (--search om): the playing
-# settings (En Croissant, 2026-10-20), but at VISITS visits, with ENGINE's
-# exploration and no resigning. Where self-play's defaults differ from UCI's
-# (tournament.cc), UCI's are set, so that the search is as in play. The
-# closer look comes at 10 visits (200 in play, at 500,000 nodes), and the
-# search waits for it (opponent-deep-tactics-wait): an 800-visit search ends
-# before most of its closer looks would arrive. Each game's search has 2
-# Stockfish processes for it. The tree is reused between moves: the visits
-# kept count towards VISITS, and the root gets its noise all the same.
+# The engine's search with the opponent model (--search om): ENGINE's
+# settings exactly, Lc0's own included (CPuct, FPU, moves left, no tree
+# reuse), and the playing settings' opponent model (En Croissant,
+# 2026-10-20), but no OpponentCautionAhead (0.4 in play): a fine-tuned
+# network judges itself well ahead from the first move (about +0.7 against
+# 791556's 0), which made the caution 0.1 + 0.4 * 0.7 everywhere and its
+# search slower to mate than 791556's (archive/run4). The closer look comes at 10 visits (200 in play, at 500,000
+# nodes), and the search waits for it (opponent-deep-tactics-wait): an
+# 800-visit search ends before most of its closer looks would arrive. Each
+# game's search has 2 Stockfish processes for it.
 ENGINE_OM = {
-    "resign-percentage": 0, "temperature": 0.9, "temp-endgame": 0,
-    "tempdecay-moves": 60, "tempdecay-delay-moves": 20, "temp-cutoff-move": 40,
-    "temp-visit-offset": -0.8, "noise-epsilon": 0.1, "noise-alpha": 0.12,
-    "cpuct-factor": 3.894, "fpu-value": 0.33, "two-fold-draws": "true",
-    "sticky-endgames": "true",
-    "cpuct": 2.5, "policy-softmax-temp": 1.359, "smart-pruning-factor": 0,
-    "moves-left-max-effect": 0.5, "moves-left-threshold": 0, "moves-left-slope": 0.01,
-    "moves-left-scaled-factor": 0.15, "moves-left-quadratic-factor": 0.85,
+    **ENGINE,
     "opponent-model-weights": MAIA, "opponent-model-rating": 1500,
     "opponent-model-own-rating": 1500, "opponent-model-temperature": 1,
     "opponent-root-candidates": 0, "opponent-best-lean": 1, "opponent-discount": 1,
     "opponent-min-probability": 0, "opponent-tactics": 0, "opponent-engine-mix": 0,
     "opponent-caution": 0.1, "opponent-refutation-probability": 0.05,
-    "opponent-caution-ahead": 0.4, "opponent-horizon": 0,
+    "opponent-caution-ahead": 0, "opponent-horizon": 0,
     "opponent-wide-visits": 10000, "opponent-wide-share": 0.5,
     "opponent-deep-tactics": 1.0, "opponent-deep-tactics-depth": 4,
     "opponent-stockfish-floor": "true", "opponent-stockfish-path": STOCKFISH,
     "opponent-deep-tactics-visits": 10, "opponent-deep-tactics-wait": "true",
-    "opponent-deep-tactics-threads": 2, "reuse-tree": "true",
+    "opponent-deep-tactics-threads": 2,
 }
-OM_FIRST = 10  # the first generation of --search om, played by net09
+# The opponent-model branch's folders and networks: gen<N>-om2, net<N>-om2,
+# eval/<network>-greedy-om2. The -om ones (2026-10-20) were played with the
+# playing settings' CPuct, FPU, moves left and tree reuse instead of ENGINE's.
+OM_SUFFIX = "-om2"
 OPPONENT = {
     "opponent-player": "true", "opponent-model-weights": MAIA,
     "opponent-model-rating": 1500, "opponent-model-own-rating": 1500,
     "opponent-model-temperature": 1.0, "opponent-engine-mix": 0,
     "opponent-tactics": 0, "opponent-min-probability": 0,
-    "opponent-deep-tactics": 2.0, "opponent-deep-tactics-depth": 4,
+    "opponent-deep-tactics": 1.0, "opponent-deep-tactics-depth": 4,
     "opponent-stockfish-path": STOCKFISH,
 }
 
 
 def generation_dir(generation, search="plain"):
-    return DATA / (f"gen{generation:02d}" + ("-om" if search == "om" else ""))
+    return DATA / (f"gen{generation:02d}" + (OM_SUFFIX if search == "om" else ""))
 
 
 def default_net(generation, search="plain"):
     """The network that plays a generation: the one trained after the
-    previous generation, or 791556 for the first; with --search om, from
-    generation OM_FIRST + 1 on, the one trained on the opponent-model
-    branch."""
+    previous generation, or 791556 for the first; with --search om, on the
+    opponent-model branch."""
     if generation == 1:
         return FIRST_NET
-    om = search == "om" and generation > OM_FIRST
-    return NETS / (f"net{generation - 1:02d}" + ("-om" if om else "") + ".pb.gz")
+    return NETS / (f"net{generation - 1:02d}" + (OM_SUFFIX if search == "om" else "") + ".pb.gz")
 
 
 def read_index(folder):
@@ -223,12 +219,12 @@ def label(folder):
         return f"Evaluation of {folder.name}"
     if folder.parent.parent.name == "matches":
         return f"Match {folder.parent.name}, {folder.name}"
-    om = folder.name.endswith("-om")
-    return f"Generation {int(folder.name[3:5])}" + (", opponent-model search" if om else "")
+    branch = folder.name[5:]
+    return f"Generation {int(folder.name[3:5])}" + (f", opponent-model search ({branch[1:]})" if branch else "")
 
 
 def eval_dir(net, greedy=False, tag="", search="plain"):
-    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else "") + ("-om" if search == "om" else "")
+    return DATA / "eval" / (net_name(net) + ("-greedy" if greedy else "") + (OM_SUFFIX if search == "om" else "")
                             + (f"-{tag}" if tag else ""))
 
 
@@ -346,7 +342,7 @@ def quartiles(values):
 
 
 def report():
-    folders = (sorted(DATA.glob("gen[0-9][0-9]")) + sorted(DATA.glob("gen[0-9][0-9]-om"))
+    folders = (sorted(DATA.glob("gen[0-9][0-9]")) + sorted(DATA.glob("gen[0-9][0-9]-om*"))
                + sorted(DATA.glob("eval/*")))
     if not folders:
         print("No games yet")
@@ -389,7 +385,7 @@ def write_pgn(folder, path):
     games = read_index(folder)
     if not games:
         sys.exit(f"{label(folder)} has no games yet")
-    search = ", opponent-model search" if folder.name.endswith("-om") else ""
+    search = ", opponent-model search" if folder.name[5:].startswith("-om") else ""
     engine = f"Lc0 {net_name((folder / 'net.txt').read_text().strip())} ({VISITS} visits{search})"
     opponent = (f"Maia-3 {OPPONENT['opponent-model-rating']} (closer look depth "
                 f"{OPPONENT['opponent-deep-tactics-depth']}, strength {OPPONENT['opponent-deep-tactics']})")
@@ -434,8 +430,6 @@ def main():
             sys.exit("--eval needs --net")
         folder = eval_dir(args.net, args.greedy, args.tag, args.search)
     else:
-        if args.search == "om" and args.generation < OM_FIRST:
-            sys.exit(f"--search om starts at generation {OM_FIRST}")
         folder = generation_dir(args.generation, args.search)
     if args.report:
         report()
